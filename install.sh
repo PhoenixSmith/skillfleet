@@ -51,12 +51,27 @@ else
 fi
 
 ASSET="skillfleet-${VERSION}-${OS}-${ARCH}.tar.gz"
-URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+DIR="https://github.com/${REPO}/releases/download/v${VERSION}"
+URL="${DIR}/${ASSET}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA256="shasum -a 256"
+else
+  die "missing sha256 tool: install sha256sum or shasum"
+fi
+
 log "downloading ${ASSET}"
 curl -fsSL -o "${TMP}/${ASSET}" "$URL" || die "download failed: $URL"
+
+log "verifying checksum"
+EXPECTED="$(curl -fsSL "${DIR}/SHA256SUMS" | awk -v a="$ASSET" '$2==a || $2==("*" a) {print $1}')"
+[ -n "$EXPECTED" ] || die "release does not publish a checksum for ${ASSET} (missing SHA256SUMS entry)"
+ACTUAL="$($SHA256 "${TMP}/${ASSET}" | awk '{print $1}')"
+[ "$ACTUAL" = "$EXPECTED" ] || die "checksum mismatch for ${ASSET}: expected ${EXPECTED}, got ${ACTUAL}"
 
 log "verifying tarball"
 tar -tzf "${TMP}/${ASSET}" >/dev/null || die "corrupt archive"

@@ -1,6 +1,6 @@
 [package]
 name = "skillfleet"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Git-backed skill routing for AI agent runtimes"
 license = "MIT"
@@ -9,8 +9,11 @@ repository = "https://github.com/PhoenixSmith/skillfleet"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4.6.9"
+clap_mangen = "0.3.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11.0"
 toml = "0.9"
 
 [dev-dependencies]

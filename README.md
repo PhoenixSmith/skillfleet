@@ -7,7 +7,7 @@
   One canonical library. Arbitrary named endpoints. Explicit symlink routing.</p>
 
   <p>
-    <a href="https://github.com/PhoenixSmith/skillfleet"><img src="https://img.shields.io/badge/version-0.2.0-f59e0b" alt="Version 0.2.0"></a>
+    <a href="https://github.com/PhoenixSmith/skillfleet"><img src="https://img.shields.io/badge/version-0.3.0-f59e0b" alt="Version 0.3.0"></a>
     <img src="https://img.shields.io/badge/CLI-Rust-dea584?logo=rust&logoColor=white" alt="Rust CLI">
     <img src="https://img.shields.io/badge/TUI-Go%20%2B%20Bubble%20Tea-00ADD8?logo=go&logoColor=white" alt="Go TUI">
     <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-4c9aff" alt="Linux and macOS">
@@ -15,7 +15,9 @@
   </p>
 </div>
 
-Skillfleet keeps skills in one canonical library and routes whole skill directories into arbitrary **named endpoints** using symlinks. It does not hardcode Hermes, OpenClaw, Claude Code, Codex, Pi, or any other runtime. If an agent reads skills from a directory, name that directory and target it.
+Every agent runtime reads skills from its own directory — `~/.claude/skills`, `~/.codex/skills`, `~/.hermes/skills`, and whatever ships next month. Without a manager that turns into copied directories, consumer-to-consumer symlinks, stale third-party snapshots, and edits landing in the wrong copy.
+
+Skillfleet keeps every skill in one git-backed library and symlinks it into **named endpoints** — any directory an agent reads. No runtime is hardcoded: name the directory and target it.
 
 ```bash
 skillfleet endpoint add claude ~/.claude/skills     # name a directory an agent reads
@@ -23,219 +25,151 @@ skillfleet skill add cleanup --source skills/cleanup --to claude codex hermes
 skillfleet plan && skillfleet sync                  # inspect, then link
 ```
 
-## Why
+Edit a skill once; every endpoint sees it. Commit the library; your whole fleet is reproducible.
 
-Without a manager, multi-agent skill setups become a thicket of copied directories, consumer-to-consumer symlinks, stale third-party snapshots, and edits landing in the wrong place.
+## Let your agents drive it
 
-Skillfleet provides:
+Skillfleet is built to be operated *by* agents, not just for them:
 
-- **One commit-able source of truth** — edit a skill once, every endpoint sees it;
-- **Arbitrary named endpoints** — no baked-in runtime compatibility table;
-- **Explicit per-skill routing** — each skill goes exactly where you send it;
-- **Owned/personal skills** alongside **Git-sourced third-party skills** with `update`;
-- **Per-endpoint source variants** — different instructions per harness, same skill name;
-- **Dry inspection** with `plan` — no writes until you say `sync`;
-- **Machine-readable `--json` output** — built for agents and CI, not just humans;
-- **Safe conflict handling** — real directories are backed up, never silently deleted.
+```bash
+skillfleet self install --to claude codex hermes    # routes the bundled skillfleet skill
+skillfleet sync
+```
+
+That teaches each agent the safe workflow — inspect with `status`, mutate through the CLI, never hand-copy skill directories. Then you can just tell your agent things like *"add this repo's review skill and route it everywhere"* or *"why is cleanup missing on codex?"*.
+
+Every command is non-interactive, and `--json` emits exactly one document per run: `{ "schema_version": 1, "ok": true, "command": "...", "data": ... }` on success, `{ "ok": false, "error": { "code": "...", "message": "..." } }` on failure. Exit codes: `0` success, `1` operation failure, `2` invalid usage. Stable error codes (`already_exists`, `not_found`, `conflict`, …) and idempotent `ensure` variants make it safe in reconciliation loops and CI:
+
+```bash
+skillfleet --json status
+skillfleet --json endpoint ensure hermes ~/.hermes/skills
+skillfleet --json --sync --verify skill route-set cleanup --to hermes openclaw
+```
+
+## Features
+
+- **One commit-able source of truth** — edit a skill once, every endpoint sees it
+- **Arbitrary named endpoints** — no baked-in runtime compatibility table
+- **Explicit per-skill routing** — each skill goes exactly where you send it
+- **Git-sourced third-party skills** — vendored, pinned, updated with `skillfleet update`
+- **Vacuum** — `sync` adopts skills you dropped into an endpoint by hand back into the library
+- **Per-endpoint source variants** — different instructions per harness, same skill name
+- **Dry inspection** — `plan` shows everything, writes nothing; `doctor` audits link health
+- **Machine-readable `--json`** — built for agents and CI, not just humans
+- **Safe conflict handling** — real directories are backed up, never silently deleted
+- **Interactive TUI** — full-screen routing matrix with staged, reviewable changes
 
 ## Install
 
-Prebuilt binaries for Linux (amd64/arm64) and macOS (amd64/arm64) are
-published with each release. Install both the CLI and the interactive TUI with
-one command:
+Prebuilt binaries for Linux and macOS (amd64/arm64), CLI + TUI in one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PhoenixSmith/skillfleet/main/install.sh | sh
 ```
 
-This downloads the release tarball matching your OS + architecture, verifies it,
-and installs `skillfleet` and `skillfleet-tui` into `~/.local/bin` (override
-with `SKILLFLEET_BINDIR`). Cache the script and review it before running if you
-prefer.
+Installs `skillfleet` and `skillfleet-tui` into `~/.local/bin` (override with `SKILLFLEET_BINDIR`). The installer and `self update` verify the release against a published `SHA256SUMS` before extracting. Updates run only when you invoke them — no telemetry, no background phone-home.
 
-For development or packaging from source (requires Rust and Go 1.18+):
+From source (Rust + Go 1.18+): `make build`, `make test`, `make install PREFIX=/usr/local`. Plain `cargo install --path .` installs the CLI alone; build `skillfleet-tui` separately or set `SKILLFLEET_TUI`.
 
-```bash
-make build                           # target/release/skillfleet{,-tui}
-make test
-make install PREFIX=/usr/local       # defaults to ~/.local/bin
-```
-
-`cargo install --path .` still installs the original CLI by itself. In that case,
-build/install `skillfleet-tui` separately, or set `SKILLFLEET_TUI` to its path.
-
-## Binaries & updates
-
-Each release carries a tarball per platform:
-
-- Linux `amd64` / `arm64`
-- macOS `amd64` (Intel) / `arm64` (Apple Silicon)
-
-Keep the binaries current:
+Shell completions and a man page are generated from the command model:
 
 ```bash
-skillfleet self update              # fetch latest release and reinstall in place
-skillfleet self update --check      # report the newest version without installing
+skillfleet completions bash        # or zsh, fish, elvish, powershell, nushell
+skillfleet man                     # roff man page
+skillfleet self uninstall --yes    # remove both binaries (prompts without --yes)
 ```
 
-`self update` compares the installed version against the latest GitHub release,
-downloads the matching-platform tarball, and atomically replaces both binaries
-beside the running executable. It requires `curl` and `tar`. There is no
-telemetry or background phone-home; checks run only when you invoke them.
-
-## Interactive TUI
-
-After `skillfleet init`, open the routing inspector with:
-
-```bash
-skillfleet tui
-skillfleet --config ./skillfleet.toml tui
-```
-
-The responsive TUI reads the same TOML and live symlink state as the CLI. Changes are staged in memory and the persistent staged counter makes it clear that the filesystem has not changed yet.
-
-- `Tab` / `Shift+Tab`: switch **Skills**, **Endpoints**, and **Plan** views
-- `↑` / `↓`: move; `←` / `→`: select an endpoint in the Skills matrix
-- `Space`: toggle the focused skill/endpoint route
-- `n`: stage a local skill; `a` / `e` / `d`: add, edit, or dependency-safely remove an endpoint
-- `Ctrl+S`: review grouped creates/removes/conflicts, then apply; `Esc`: go back
-- On each conflict: `s` skip, `k` keep existing, or `b` backup and link; unresolved conflicts block apply
-- `/`: search skills; `r`: reload; `?`: contextual help; `q`: quit (with a dirty warning)
-
-Endpoint forms expand paths and validate existence, writability, duplicates, nesting, and library overlap, then report unmanaged entries. Apply uses the existing Rust CLI, runs a safe sync by default, and automatically runs `doctor`; the complete apply/doctor summary is shown afterward. Backup-and-link is available only as an explicit per-conflict choice. The launcher locates `skillfleet-tui` beside `skillfleet`, passes the resolved config path, and points mutations back at the exact CLI executable.
+Pipe a completion script into your shell's completion directory, or write `make man` / `make completions` to stage them.
 
 ## Quick start
 
 ```bash
 skillfleet init --library ~/agent-skills
 
-skillfleet endpoint add hermes ~/.hermes/skills
-skillfleet endpoint add openclaw ~/.openclaw/skills
-skillfleet endpoint add pi ~/.pi/agent/skills
-skillfleet endpoint add codex ~/.codex/skills
 skillfleet endpoint add claude ~/.claude/skills
+skillfleet endpoint add codex ~/.codex/skills
+skillfleet endpoint add hermes ~/.hermes/skills
 
-# Teach selected agents how to operate Skillfleet safely.
-skillfleet self install --to hermes pi codex claude
-skillfleet sync
+skillfleet skill add cleanup --source skills/cleanup --to claude codex hermes
 
-skillfleet skill add cleanup \
-  --source skills/cleanup \
-  --to hermes openclaw pi codex claude
-
-skillfleet plan
-skillfleet sync
-skillfleet doctor
+skillfleet plan      # dry run
+skillfleet sync      # link
+skillfleet doctor    # audit
 ```
 
-Endpoint names are labels, not a baked-in compatibility table:
+New runtime next month? It's just another label:
 
 ```bash
 skillfleet endpoint add future-agent ~/.future-agent/skills
-skillfleet skill route cleanup --to hermes future-agent
+skillfleet skill route-add cleanup --to future-agent
 skillfleet sync
 ```
+
+**Vacuum:** `sync` also adopts skills added to an endpoint by hand. A directory containing `SKILL.md` is copied into `<library>/skills/<name>`, registered for its originating endpoint only, and replaced by a managed symlink. Opt an endpoint out with `--no-vacuum` on `endpoint add`/`ensure` (`ensure` preserves the setting; `--vacuum` re-enables it). Name collisions fail closed; vacuum never commits or pushes the library repo.
 
 ## Third-party Git skills
 
-The remote may be one skill at repository root:
-
-```bash
-skillfleet skill add upstream-review \
-  --git https://github.com/example/review-skill.git \
-  --to claude codex
-skillfleet update upstream-review
-skillfleet sync
-```
-
-Or one skill inside a larger repository:
+Subscribe to a skill at a repo root, or a subdirectory of a larger repo:
 
 ```bash
 skillfleet skill add autoreview \
   --git https://github.com/openclaw/agent-skills.git \
   --subdir skills/autoreview \
   --to hermes openclaw
-skillfleet update autoreview
+skillfleet update autoreview && skillfleet sync
 ```
 
-`update` vendors the selected directory under `<library>/vendor/<name>`. Commit that directory in the library repo to pin and review upstream changes.
-
-Run all subscribed updates from cron/CI:
-
-```bash
-skillfleet update && skillfleet sync && skillfleet doctor
-```
+`update` vendors the directory under `<library>/vendor/<name>`; commit it to pin and review upstream changes. `skillfleet update && skillfleet sync && skillfleet doctor` is cron/CI-ready.
 
 ## Per-endpoint variants
 
-A skill may need different instructions for different harnesses:
+Same skill name, different instructions per harness:
 
 ```bash
-skillfleet skill add impeccable \
-  --source skills/impeccable/agents \
-  --to hermes claude
-skillfleet skill source impeccable \
-  --for claude skills/impeccable/claude
+skillfleet skill add impeccable --source skills/impeccable/agents --to hermes claude
+skillfleet skill source impeccable --for claude skills/impeccable/claude
 ```
 
-The endpoint remains generic. Only that route gets the override.
+## Interactive TUI
 
-## Agent and CI usage
-
-Commands are non-interactive. Global `--json` emits exactly one document: success is `{ "schema_version": 1, "ok": true, "command": "...", "data": ... }`; failure is `{ "schema_version": 1, "ok": false, "error": { "code": "...", "message": "..." } }`. Exit codes are 0 for success, 1 for operation/verification failure, and 2 for invalid usage. Stable error codes are `usage_error`, `already_exists`, `not_found`, `unknown_endpoint`, `conflict`, `invalid_skill`, `config_error`, `verification_failed`, and `operation_failed`.
-
-```bash
-skillfleet --json status
-skillfleet --json endpoint ensure hermes ~/.hermes/skills
-skillfleet --json skill ensure cleanup --source skills/cleanup --to hermes openclaw
-skillfleet --json --sync --verify skill route-set cleanup --to hermes openclaw
-skillfleet --json skill route-add cleanup --to pi
-skillfleet --json skill route-remove cleanup --from openclaw
-```
-
-`status` returns config/library paths, endpoints, skills, routes, pending actions, summary counts, and health. Plan actions have stable names and a `destructive` flag. `add` rejects duplicates; use idempotent `ensure` in reconciliation loops. Legacy `skill route NAME --to ...` remains an exact-set alias. `--verify` implies `--sync`. Git subprocess output is suppressed in JSON mode.
+`skillfleet tui` opens a full-screen routing matrix over the same config and live symlink state. Toggle routes with `Space`; endpoint add/edit forms include a default-on **Vacuum manual skills** checkbox, also toggled with `Space`. Review grouped creates/removes/conflicts with `Ctrl+S` before anything touches disk. Apply shells out to the same CLI and finishes with a `doctor` audit. Each conflict is resolved explicitly (skip, keep, or backup-and-link). Press `?` for contextual help.
 
 ## Commands
 
 ```text
 skillfleet init --library PATH
-skillfleet endpoint add NAME PATH
-skillfleet endpoint ensure NAME PATH
+skillfleet endpoint add NAME PATH [--no-vacuum]
+skillfleet endpoint ensure NAME PATH [--no-vacuum | --vacuum]
 skillfleet endpoint remove NAME
-skillfleet endpoint list
-skillfleet endpoint show NAME
+skillfleet endpoint list | show NAME
 skillfleet skill add NAME [--source PATH | --git URL [--subdir PATH]] [--to ...]
 skillfleet skill ensure NAME [--source PATH | --git URL [--subdir PATH]] [--to ...]
 skillfleet skill remove NAME
-skillfleet skill route NAME --to [ENDPOINT ...]
-skillfleet skill route-set NAME --to [ENDPOINT ...]
+skillfleet skill route-set NAME --to [ENDPOINT ...]     # `skill route` is an alias
 skillfleet skill route-add NAME --to ENDPOINT ...
 skillfleet skill route-remove NAME --from ENDPOINT ...
 skillfleet skill source NAME --for ENDPOINT PATH
-skillfleet skill list
-skillfleet skill show NAME
-skillfleet plan
-skillfleet status
-skillfleet sync [--force]
-skillfleet doctor
-skillfleet tui
+skillfleet skill list | show NAME
+skillfleet plan | status | sync [--force] | doctor | tui
 skillfleet update [NAME] [--check]
 skillfleet self install --to [ENDPOINT ...]   # route the bundled skillfleet skill
 skillfleet self update [--check]              # update the binaries from the latest release
-# Global mutation options: --sync, --verify
+skillfleet self uninstall [--yes]             # remove the binaries
+skillfleet completions SHELL                  # bash/zsh/fish/elvish/powershell/nushell
+skillfleet man                                # print the roff man page
+# Global options: --json, --config PATH, --sync, --verify
 ```
 
-Set `SKILLFLEET_CONFIG` or pass `--config`. Default: `~/.config/skillfleet/skillfleet.toml`.
+Config resolution: `SKILLFLEET_CONFIG` or `--config` always wins. Otherwise the CLI and TUI walk up from the working directory looking for a repo-local `skillfleet.toml` (so a manifest committed beside the library is picked up on its own); with no manifest found it falls back to `~/.config/skillfleet/skillfleet.toml`. `skillfleet init` writes the manifest co-located at `{library}/skillfleet.toml` when no explicit path is given, so the routing config is versioned with the skills.
 
 ## Safety model
 
 - Skillfleet manages only links whose resolved targets are inside the configured library.
-- Unrelated files and external symlinks in endpoint directories are ignored.
-- `sync` refuses real-path conflicts.
-- `sync --force` moves a conflicting path to a sibling `*.skillfleet-backup*` before linking.
+- Vacuum adopts only directories containing `SKILL.md` on endpoints with vacuum enabled; unrelated files and external symlinks are ignored.
+- `sync` refuses real-path conflicts; `sync --force` moves the conflicting path to a sibling `*.skillfleet-backup*` before linking.
 - `plan` performs no writes.
 - `doctor` requires every declared route to resolve to its exact canonical source.
 
 ## Status
 
-`0.2.0`. MIT licensed. Linux/macOS symlink model. We are dogfooding it across Hermes, OpenClaw, Pi, OMP, Codex, Claude Code, OpenCode, Factory, and a generic Agent Skills endpoint before broadening the platform surface.
+`0.3.0`. MIT licensed. Linux/macOS symlink model. Dogfooded across Hermes, OpenClaw, Pi, OMP, Codex, Claude Code, OpenCode, Factory, and a generic Agent Skills endpoint before broadening the platform surface.

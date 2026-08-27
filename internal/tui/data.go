@@ -19,8 +19,13 @@ type Config struct {
 }
 
 type Endpoint struct {
-	Path string `toml:"path"`
+	Path   string `toml:"path"`
+	Vacuum *bool  `toml:"vacuum"`
 }
+
+func vacuumEnabled(ep Endpoint) bool { return ep.Vacuum == nil || *ep.Vacuum }
+func boolPtr(v bool) *bool           { return &v }
+
 type Skill struct {
 	Source          string            `toml:"source"`
 	SourceOverrides map[string]string `toml:"source_overrides"`
@@ -63,6 +68,7 @@ type Change struct {
 	Kind       ChangeKind
 	Name, Path string
 	Targets    []string
+	Vacuum     *bool
 }
 
 func (c Change) Label() string {
@@ -150,11 +156,34 @@ func DefaultConfigPath() string {
 	if p := os.Getenv("SKILLFLEET_CONFIG"); p != "" {
 		return p
 	}
+	// Prefer a repo-local manifest committed with the library: walk up from the
+	// working directory so a config checked in alongside the skills is picked
+	// up automatically (the git-backed source-of-truth pattern).
+	if p := findUpwardManifest(); p != "" {
+		return p
+	}
 	h, err := os.UserHomeDir()
 	if err != nil {
 		return ".config/skillfleet/skillfleet.toml"
 	}
 	return filepath.Join(h, ".config", "skillfleet", "skillfleet.toml")
+}
+func findUpwardManifest() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		candidate := filepath.Join(dir, "skillfleet.toml")
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 func expand(path string) string {
 	if path == "~" {

@@ -162,11 +162,53 @@ func TestNewSkillImmediatelyRoutableInSameDraft(t *testing.T) {
 	m.form = &formState{mode: "Add skill", name: "gamma", path: "skills/gamma"}
 	n, _ := m.updateForm(tea.KeyMsg{Type: tea.KeyEnter})
 	m = n.(Model)
-	if got := m.filtered(); len(got) != 3 || got[2] != "gamma" { t.Fatalf("staged skill missing: %v", got) }
+	if got := m.filtered(); len(got) != 3 || got[2] != "gamma" {
+		t.Fatalf("staged skill missing: %v", got)
+	}
 	m.modalTitle, m.modalBody = "", ""
 	m.cursor = 2
 	m.toggleRoute()
-	if !m.targets("gamma")["hermes"] { t.Fatal("staged skill was not routable") }
+	if !m.targets("gamma")["hermes"] {
+		t.Fatal("staged skill was not routable")
+	}
 	p := m.buildPlan()
-	if len(p.Creates) < 2 { t.Fatalf("same-transaction plan=%#v", p) }
+	if len(p.Creates) < 2 {
+		t.Fatalf("same-transaction plan=%#v", p)
+	}
+}
+
+func TestEndpointVacuumCheckboxDefaultsOnAndStagesOptOut(t *testing.T) {
+	m := NewModel(fixture(t))
+	m.tab = EndpointsTab
+	m = key(m, "a")
+	if m.form == nil || !m.form.vacuum {
+		t.Fatal("new endpoint vacuum checkbox should default on")
+	}
+	m.form.name = "local"
+	m.form.path = t.TempDir()
+	m.form.field = 2
+	m = key(m, " ")
+	if m.form.vacuum {
+		t.Fatal("space did not disable vacuum")
+	}
+	m = key(m, "enter")
+	if len(m.changes) != 1 || m.changes[0].Vacuum == nil || *m.changes[0].Vacuum {
+		t.Fatalf("opt-out not staged: %#v", m.changes)
+	}
+}
+
+func TestEndpointEditLoadsVacuumSettingAndViewShowsIt(t *testing.T) {
+	s := fixture(t)
+	ep := s.Config.Endpoints["hermes"]
+	ep.Vacuum = boolPtr(false)
+	s.Config.Endpoints["hermes"] = ep
+	m := NewModel(s)
+	m.tab = EndpointsTab
+	if !strings.Contains(m.endpointsView(120), "vacuum off") {
+		t.Fatal("endpoint view does not show vacuum state")
+	}
+	m = key(m, "e")
+	if m.form == nil || m.form.vacuum {
+		t.Fatal("edit form did not load disabled vacuum state")
+	}
 }

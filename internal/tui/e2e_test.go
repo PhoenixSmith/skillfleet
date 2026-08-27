@@ -58,3 +58,42 @@ func TestRealCLIEndToEnd(t *testing.T) {
 		t.Fatalf("doctor-equivalent route state=%v\n%s", c, msg.output)
 	}
 }
+
+func TestRealCLITUIVacuumOptOut(t *testing.T) {
+	bin := os.Getenv("SKILLFLEET_E2E_BIN")
+	if bin == "" {
+		t.Skip("set SKILLFLEET_E2E_BIN to the Rust binary")
+	}
+	root := t.TempDir()
+	lib := filepath.Join(root, "library")
+	ep := filepath.Join(root, "endpoint")
+	os.MkdirAll(lib, 0755)
+	os.MkdirAll(ep, 0755)
+	cfg := filepath.Join(root, "skillfleet.toml")
+	text := "schema = 1\nlibrary = \"" + lib + "\"\n"
+	os.WriteFile(cfg, []byte(text), 0644)
+	changes := []Change{{Kind: ChangeEndpointAdd, Name: "local", Path: ep, Vacuum: boolPtr(false)}}
+	msg := runApply(CLIRunner{Binary: bin}, cfg, changes, false)().(applyResultMsg)
+	if msg.err != nil {
+		t.Fatalf("apply: %v\n%s", msg.err, msg.output)
+	}
+	s, err := LoadSnapshot(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vacuumEnabled(s.Config.Endpoints["local"]) {
+		t.Fatal("TUI apply did not persist vacuum opt-out")
+	}
+	changes = []Change{{Kind: ChangeEndpointEdit, Name: "local", Path: ep, Vacuum: boolPtr(true)}}
+	msg = runApply(CLIRunner{Binary: bin}, cfg, changes, false)().(applyResultMsg)
+	if msg.err != nil {
+		t.Fatalf("re-enable apply: %v\n%s", msg.err, msg.output)
+	}
+	s, err = LoadSnapshot(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vacuumEnabled(s.Config.Endpoints["local"]) {
+		t.Fatal("TUI apply did not re-enable vacuum")
+	}
+}

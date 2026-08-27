@@ -59,6 +59,13 @@ func runApply(r Runner, config string, changes []Change, force bool) tea.Cmd {
 				args = append(args, c.Targets...)
 			case ChangeEndpointAdd, ChangeEndpointEdit:
 				args = []string{"endpoint", "ensure", c.Name, c.Path}
+				if c.Vacuum != nil {
+					if *c.Vacuum {
+						args = append(args, "--vacuum")
+					} else {
+						args = append(args, "--no-vacuum")
+					}
+				}
 			case ChangeEndpointRemove:
 				args = []string{"endpoint", "remove", c.Name}
 			case ChangeSkillAdd:

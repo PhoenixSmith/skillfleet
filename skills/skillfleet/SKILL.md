@@ -19,6 +19,8 @@ Use Skillfleet whenever an agent needs to inspect, add, update, route, or audit 
 - Endpoints are arbitrary named directories such as `hermes`, `pi`, or `future-agent`.
 - Skills target endpoint names. Skillfleet creates direct whole-directory symlinks from endpoints into the library.
 - Per-endpoint source overrides support harness-specific skill variants.
+- `sync` vacuums manually added skill directories into `skills/<name>/` by default, registers them only for the originating endpoint, and links them back. Use `endpoint add/ensure ... --no-vacuum` for a local-only endpoint.
+- The TUI endpoint add/edit form exposes the same default-on vacuum setting as a checkbox; Space toggles it.
 
 ## Agent-safe workflow
 
@@ -74,11 +76,12 @@ skillfleet skill source <name> --for <endpoint> skills/<name>/<variant>
 6. Finish every mutation with `skillfleet --json doctor`. A nonzero exit means the setup is not clean.
 7. Do not remove an endpoint while skills still target it. Re-route those skills first.
 8. Keep the library git-clean after intentional changes are committed. Skillfleet does not push or publish repositories itself.
+9. Vacuum is default-on but fails closed on name or destination collisions. It changes the local library and config only; inspect and commit those changes separately.
 
 ## Machine-readable behavior
 
 Use global `--json` for discovery, plan, and doctor output. Commands are non-interactive and return nonzero on failure. Do not scrape human tables when JSON is available.
 
-The config defaults to `~/.config/skillfleet/skillfleet.toml`. If the deployment uses a repository-local config, set `SKILLFLEET_CONFIG` or pass `--config <path>` on every invocation.
+Config resolution: `SKILLFLEET_CONFIG` or `--config` always wins; otherwise the CLI and TUI walk up from the working directory for a repo-local `skillfleet.toml` (a manifest committed beside the library is picked up automatically), falling back to `~/.config/skillfleet/skillfleet.toml`. `skillfleet init` writes the manifest at `{library}/skillfleet.toml` when no explicit path is given, so the routing config is versioned with the skills. Point-invariant helpers (cron, CI, agents) should still pass the config or set `SKILLFLEET_CONFIG` explicitly rather than depend on the working directory.
 
 Use `skillfleet --json update <name> --check` to preview old/new revisions and changed files without replacing vendored content. Plan output includes stable action names, destructive markers, source validation errors, and summary counts.

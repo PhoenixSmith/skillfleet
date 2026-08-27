@@ -26,6 +26,7 @@ var tabNames = []string{"Skills", "Endpoints", "Plan"}
 type formState struct {
 	mode, name, path, editing string
 	field, preset             int
+	vacuum                    bool
 }
 
 type Model struct {
@@ -132,7 +133,7 @@ func (m *Model) restoreDraft() {
 			}
 			m.routeEdits[c.Name] = x
 		case ChangeEndpointAdd, ChangeEndpointEdit:
-			m.endpointEdits[c.Name] = &Endpoint{Path: c.Path}
+			m.endpointEdits[c.Name] = &Endpoint{Path: c.Path, Vacuum: c.Vacuum}
 		case ChangeEndpointRemove:
 			m.endpointEdits[c.Name] = nil
 		}
@@ -230,7 +231,9 @@ func (m Model) buildPlan() ApplyPlan {
 						dst = expand(ep.Path) + "/" + c.Name
 					}
 					state := RouteMissing
-					if skillExists { state = inspectRoute(sourcePath(m.snapshot.Config, skill, x), dst) }
+					if skillExists {
+						state = inspectRoute(sourcePath(m.snapshot.Config, skill, x), dst)
+					}
 					if state == RouteConflict || state == RouteBroken {
 						p.Conflicts = append(p.Conflicts, Conflict{Skill: c.Name, Endpoint: x, Destination: dst})
 					} else {
@@ -363,7 +366,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "a":
 			if m.tab == EndpointsTab {
-				m.form = &formState{mode: "Add endpoint"}
+				m.form = &formState{mode: "Add endpoint", vacuum: true}
 			}
 		case "n":
 			if m.tab == SkillsTab {
@@ -375,7 +378,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(ns) > 0 {
 					n := ns[m.cursor]
 					ep := m.snapshot.Config.Endpoints[n]
-					m.form = &formState{mode: "Edit endpoint", name: n, path: ep.Path, editing: n, field: 1}
+					if staged, ok := m.endpointEdits[n]; ok && staged != nil {
+						ep = *staged
+					}
+					m.form = &formState{mode: "Edit endpoint", name: n, path: ep.Path, editing: n, field: 1, vacuum: vacuumEnabled(ep)}
 				}
 			}
 		case "d", "delete":
@@ -424,9 +430,21 @@ func (m Model) updateForm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.form = nil
 	case "tab", "down":
-		f.field = (f.field + 1) % 2
+		fields := 2
+		if f.mode != "Add skill" {
+			fields = 3
+		}
+		f.field = (f.field + 1) % fields
 	case "shift+tab", "up":
-		f.field = (f.field + 1) % 2
+		fields := 2
+		if f.mode != "Add skill" {
+			fields = 3
+		}
+		f.field = (f.field + fields - 1) % fields
+	case " ":
+		if f.mode != "Add skill" && f.field == 2 {
+			f.vacuum = !f.vacuum
+		}
 	case "backspace":
 		p := &f.name
 		if f.field == 1 {
@@ -460,7 +478,12 @@ func (m Model) updateForm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modalBody = "Skill is now in the matrix. Close this message, select it, and route it with Space before the same apply."
 			m.form = nil
 			m.query = ""
-			for i,n := range m.filtered() { if n==f.name { m.cursor=i; break } }
+			for i, n := range m.filtered() {
+				if n == f.name {
+					m.cursor = i
+					break
+				}
+			}
 			return m, nil
 		}
 		if err := validateEndpoint(f.name, f.path, m.snapshot.Config, f.editing); err != nil {
@@ -471,8 +494,8 @@ func (m Model) updateForm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if f.editing != "" {
 				kind = ChangeEndpointEdit
 			}
-			m.endpointEdits[f.name] = &Endpoint{Path: f.path}
-			m.addChange(Change{Kind: kind, Name: f.name, Path: f.path})
+			m.endpointEdits[f.name] = &Endpoint{Path: f.path, Vacuum: boolPtr(f.vacuum)}
+			m.addChange(Change{Kind: kind, Name: f.name, Path: f.path, Vacuum: boolPtr(f.vacuum)})
 			m.modalTitle = "Endpoint staged"
 			m.modalBody = fmt.Sprintf("%s\n%d unmanaged entries found. No files changed until Ctrl+S.", expand(f.path), unmanagedCount(f.path, m.snapshot.Config.Skills))
 			m.form = nil
@@ -544,8 +567,20 @@ func (m Model) updatePlan(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 func (m Model) filtered() []string {
-	set:=map[string]bool{};for _,n:=range m.snapshot.SkillNames(){set[n]=true};for _,c:=range m.changes{if c.Kind==ChangeSkillAdd{set[c.Name]=true}}
-	ns:=make([]string,0,len(set));for n:=range set{ns=append(ns,n)};sort.Strings(ns)
+	set := map[string]bool{}
+	for _, n := range m.snapshot.SkillNames() {
+		set[n] = true
+	}
+	for _, c := range m.changes {
+		if c.Kind == ChangeSkillAdd {
+			set[c.Name] = true
+		}
+	}
+	ns := make([]string, 0, len(set))
+	for n := range set {
+		ns = append(ns, n)
+	}
+	sort.Strings(ns)
 	if m.query == "" {
 		return ns
 	}
@@ -654,7 +689,11 @@ func (m Model) endpointsView(w int) string {
 		if i == m.cursor {
 			prefix = "› "
 		}
-		line := fmt.Sprintf("%s%s  %s  %d routes  %d unmanaged", prefix, n, expand(ep.Path), routes, unmanagedCount(ep.Path, m.snapshot.Config.Skills))
+		vacuum := "vacuum off"
+		if vacuumEnabled(ep) {
+			vacuum = "vacuum on"
+		}
+		line := fmt.Sprintf("%s%s  %s  %s  %d routes  %d unmanaged", prefix, n, expand(ep.Path), vacuum, routes, unmanagedCount(ep.Path, m.snapshot.Config.Skills))
 		lines = append(lines, clamp(line, w))
 	}
 	if len(ns) == 0 {
@@ -712,7 +751,15 @@ func (m Model) overlay() string {
 		if f.mode == "Add skill" {
 			label = "Source"
 		}
-		return fmt.Sprintf("%s\n\n%s Name: %s\n%s %s: %s\n\nTab next · Enter validate and stage · Esc cancel", titleStyle.Render(f.mode), pick(f.field == 0, "›", " "), f.name, pick(f.field == 1, "›", " "), label, f.path)
+		vacuum := ""
+		if f.mode != "Add skill" {
+			mark := "☐"
+			if f.vacuum {
+				mark = "☑"
+			}
+			vacuum = fmt.Sprintf("\n%s Vacuum manual skills: %s", pick(f.field == 2, "›", " "), mark)
+		}
+		return fmt.Sprintf("%s\n\n%s Name: %s\n%s %s: %s%s\n\nTab next · Space toggle · Enter validate and stage · Esc cancel", titleStyle.Render(f.mode), pick(f.field == 0, "›", " "), f.name, pick(f.field == 1, "›", " "), label, f.path, vacuum)
 	}
 	return ""
 }
