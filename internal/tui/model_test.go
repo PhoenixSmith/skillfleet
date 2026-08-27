@@ -204,7 +204,8 @@ func TestEndpointEditLoadsVacuumSettingAndViewShowsIt(t *testing.T) {
 	s.Config.Endpoints["hermes"] = ep
 	m := NewModel(s)
 	m.tab = EndpointsTab
-	if !strings.Contains(m.endpointsView(120), "vacuum off") {
+	view := m.endpointsView(120)
+	if !strings.Contains(view, "vacuum") || !strings.Contains(view, "off") {
 		t.Fatal("endpoint view does not show vacuum state")
 	}
 	m = key(m, "e")

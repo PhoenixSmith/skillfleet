@@ -35,7 +35,7 @@ func TestDefaultConfigPathRepoLocal(t *testing.T) {
 	if err := os.WriteFile(manifest, []byte("schema = 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultConfigPath(); got != manifest {
+	if got := DefaultConfigPath(); !sameResolvedPath(got, manifest) {
 		t.Fatalf("repo-local = %q, want %q", got, manifest)
 	}
 
@@ -44,9 +44,16 @@ func TestDefaultConfigPathRepoLocal(t *testing.T) {
 	if err := os.WriteFile(nearer, []byte("schema = 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultConfigPath(); got != nearer {
+	if got := DefaultConfigPath(); !sameResolvedPath(got, nearer) {
 		t.Fatalf("closest = %q, want %q", got, nearer)
 	}
+}
+
+// macOS exposes temporary directories through both /var and /private/var.
+func sameResolvedPath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }
 
 func TestDefaultConfigPathEnvWins(t *testing.T) {
