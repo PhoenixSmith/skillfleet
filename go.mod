@@ -3,7 +3,7 @@ module github.com/PhoenixSmith/skillfleet/tui
 go 1.18
 
 require (
-	github.com/BurntSushi/toml v1.4.0
+	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/bubbletea v1.3.4
 	github.com/charmbracelet/lipgloss v1.0.0
 )
