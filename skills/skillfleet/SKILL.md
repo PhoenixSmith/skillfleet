@@ -22,28 +22,31 @@ Use Skillfleet whenever an agent needs to inspect, add, update, route, or audit 
 
 ## Agent-safe workflow
 
-Always inspect before mutation:
+Always inspect before mutation. `status` is the preferred single-call snapshot:
 
 ```bash
-skillfleet --json endpoint list
-skillfleet --json skill list
+skillfleet --json status
 skillfleet --json skill show <name>
 skillfleet --json plan
 ```
 
-Route a skill by replacing its exact target set:
+JSON mode emits one versioned success or error envelope. Treat exit 1 as an operation/verification failure and exit 2 as invalid usage; parse `error.code`, not human text.
+
+Route explicitly by setting, adding, or removing targets. For an atomic agent mutation, use global `--sync --verify` (`--verify` implies sync):
 
 ```bash
-skillfleet skill route <name> --to <endpoint> [endpoint...]
-skillfleet --json plan
-skillfleet sync
-skillfleet --json doctor
+skillfleet --json --sync --verify skill route-set <name> --to <endpoint> [endpoint...]
+skillfleet --json skill route-add <name> --to <endpoint...>
+skillfleet --json skill route-remove <name> --from <endpoint...>
 ```
 
-Add an owned skill already present in the library:
+Legacy `skill route` is exact-set routing. Prefer `route-set` in new automation.
+
+Reconcile endpoints and owned skills idempotently. `add` intentionally fails if the name exists:
 
 ```bash
-skillfleet skill add <name> --source skills/<name> --to <endpoint...>
+skillfleet --json endpoint ensure <endpoint> <path>
+skillfleet --json skill ensure <name> --source skills/<name> --to <endpoint...>
 ```
 
 Subscribe to a Git-hosted skill:
@@ -77,3 +80,5 @@ skillfleet skill source <name> --for <endpoint> skills/<name>/<variant>
 Use global `--json` for discovery, plan, and doctor output. Commands are non-interactive and return nonzero on failure. Do not scrape human tables when JSON is available.
 
 The config defaults to `~/.config/skillfleet/skillfleet.toml`. If the deployment uses a repository-local config, set `SKILLFLEET_CONFIG` or pass `--config <path>` on every invocation.
+
+Use `skillfleet --json update <name> --check` to preview old/new revisions and changed files without replacing vendored content. Plan output includes stable action names, destructive markers, source validation errors, and summary counts.

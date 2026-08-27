@@ -1,0 +1,97 @@
+name: release
+
+# Builds skillfleet + skillfleet-tui for linux/macOS on amd64+arm64, packages
+# each pair into skillfleet-<ver>-<os>-<arch>.tar.gz, and attaches the
+# archives to a GitHub release. Designed to match the asset names used by
+# install.sh and `skillfleet self update`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: amd64
+            runner: macos-13
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.18"
+
+      - name: Build skillfleet (Rust)
+        run: cargo build --release
+
+      - name: Build skillfleet-tui (Go)
+        run: go build -o target/release/skillfleet-tui ./cmd/skillfleet-tui
+
+      - name: Run tests
+        run: |
+          cargo test --release
+          go test ./...
+
+      - name: Package tarball
+        env:
+          VER: ${{ github.ref_name }}
+        run: |
+          VER="${VER#v}"
+          mkdir -p dist
+          tar -C target/release -czf "dist/skillfleet-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" skillfleet skillfleet-tui
+          echo "Packaged skillfleet-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skillfleet-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          fail_on_unmatched_files: true
