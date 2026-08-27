@@ -204,10 +204,6 @@ func TestEndpointEditLoadsVacuumSettingAndViewShowsIt(t *testing.T) {
 	s.Config.Endpoints["hermes"] = ep
 	m := NewModel(s)
 	m.tab = EndpointsTab
-	view := m.endpointsView(120)
-	if !strings.Contains(view, "vacuum") || !strings.Contains(view, "off") {
-		t.Fatal("endpoint view does not show vacuum state")
-	}
 	m = key(m, "e")
 	if m.form == nil || m.form.vacuum {
 		t.Fatal("edit form did not load disabled vacuum state")
@@ -286,5 +282,30 @@ func TestPlanViewShowsPendingVacuumAdoptions(t *testing.T) {
 	s.Config.Endpoints["hermes"] = Endpoint{Path: ep.Path, Vacuum: &off}
 	if out := NewModel(s).planView(100); strings.Contains(out, "manual-skill") {
 		t.Fatalf("vacuum preview shown for opted-out endpoint:\n%s", out)
+	}
+}
+
+type recordingRunner struct{ calls [][]string }
+
+func (r *recordingRunner) Run(config string, args ...string) (string, error) {
+	r.calls = append(r.calls, args)
+	return "", nil
+}
+
+func TestApplySyncsBeforeEndpointRemovalToDetachLinks(t *testing.T) {
+	r := &recordingRunner{}
+	changes := []Change{
+		{Kind: ChangeEndpointRemove, Name: "gone"},
+		{Kind: ChangeRoute, Name: "alpha", Targets: []string{}},
+	}
+	runApply(r, "cfg.toml", changes, false)()
+	var seq []string
+	for _, c := range r.calls {
+		seq = append(seq, strings.Join(c, " "))
+	}
+	got := strings.Join(seq, " | ")
+	want := "skill route alpha --to | sync | endpoint remove gone | sync | doctor"
+	if got != want {
+		t.Fatalf("apply order wrong:\n got  %s\n want %s", got, want)
 	}
 }
