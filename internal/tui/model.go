@@ -320,12 +320,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch k {
-		case "q", "ctrl+c", "esc":
+		case "q", "ctrl+c":
 			if m.dirty() {
 				m.dirtyQuit = true
 			} else {
 				return m, tea.Quit
 			}
+		case "esc":
+			m.showHelp = false
 		case "?":
 			m.showHelp = !m.showHelp
 		case "/":
@@ -497,7 +499,7 @@ func (m Model) updateForm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.endpointEdits[f.name] = &Endpoint{Path: f.path, Vacuum: boolPtr(f.vacuum)}
 			m.addChange(Change{Kind: kind, Name: f.name, Path: f.path, Vacuum: boolPtr(f.vacuum)})
 			m.modalTitle = "Endpoint staged"
-			m.modalBody = fmt.Sprintf("%s\n%d unmanaged entries found. No files changed until Ctrl+S.", expand(f.path), unmanagedCount(f.path, m.snapshot.Config.Skills))
+			m.modalBody = fmt.Sprintf("%s\n%s. No files changed until Ctrl+S.", expand(f.path), plural(unmanagedCount(f.path, m.snapshot.Config.Skills), "unmanaged entry found", "unmanaged entries found"))
 			m.form = nil
 		}
 	default:
@@ -751,7 +753,7 @@ func (m Model) endpointsView(w int) string {
 		if vacuumEnabled(ep) {
 			vacuum = "vacuum on"
 		}
-		line := fmt.Sprintf("%s%s  %s  %s  %d routes  %d unmanaged", prefix, n, expand(ep.Path), vacuum, routes, unmanagedCount(ep.Path, m.snapshot.Config.Skills))
+		line := fmt.Sprintf("%s%s  %s  %d routes  %d unmanaged  %s", prefix, n, vacuum, routes, unmanagedCount(ep.Path, m.snapshot.Config.Skills), expand(ep.Path))
 		lines = append(lines, clamp(line, w))
 	}
 	if len(ns) == 0 {
@@ -834,6 +836,12 @@ func (m Model) overlay() string {
 		return fmt.Sprintf("%s\n\n%s Name: %s\n%s %s: %s%s\n\nTab next · Space toggle · Enter validate and stage · Esc cancel", titleStyle.Render(f.mode), pick(f.field == 0, "›", " "), f.name, pick(f.field == 1, "›", " "), label, f.path, vacuum)
 	}
 	return ""
+}
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 func pick(ok bool, a, b string) string {
 	if ok {

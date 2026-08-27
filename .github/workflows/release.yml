@@ -1,6 +1,6 @@
 name: release
 
-# Builds skillfleet + skillfleet-tui for linux/macOS on amd64+arm64, packages
+# Builds skillfleet + skillfleet-tui for Linux amd64/arm64 and macOS arm64, packages
 # each pair into skillfleet-<ver>-<os>-<arch>.tar.gz, and attaches the
 # archives to a GitHub release. Designed to match the asset names used by
 # install.sh and `skillfleet self update`.
@@ -28,9 +28,6 @@ jobs:
           - os: linux
             arch: arm64
             runner: ubuntu-24.04-arm
-          - os: darwin
-            arch: amd64
-            runner: macos-13
           - os: darwin
             arch: arm64
             runner: macos-latest

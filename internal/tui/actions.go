@@ -51,7 +51,28 @@ type applyResultMsg struct {
 func runApply(r Runner, config string, changes []Change, force bool) tea.Cmd {
 	return func() tea.Msg {
 		var out []string
+		step := func(label string, args ...string) *applyResultMsg {
+			s, err := r.Run(config, args...)
+			if s != "" {
+				out = append(out, s)
+			}
+			if err != nil {
+				return &applyResultMsg{strings.Join(out, "\n"), fmt.Errorf("%s: %w", label, err)}
+			}
+			return nil
+		}
+		// Endpoint removals run last, behind an interim sync, so staged
+		// unroutes detach their symlinks while the endpoint is still managed;
+		// removing first would orphan the links forever.
+		var removes, others []Change
 		for _, c := range changes {
+			if c.Kind == ChangeEndpointRemove {
+				removes = append(removes, c)
+			} else {
+				others = append(others, c)
+			}
+		}
+		for _, c := range others {
 			var args []string
 			switch c.Kind {
 			case ChangeRoute:
@@ -66,31 +87,31 @@ func runApply(r Runner, config string, changes []Change, force bool) tea.Cmd {
 						args = append(args, "--no-vacuum")
 					}
 				}
-			case ChangeEndpointRemove:
-				args = []string{"endpoint", "remove", c.Name}
 			case ChangeSkillAdd:
 				args = []string{"skill", "add", c.Name, "--source", c.Path}
 			}
-			s, err := r.Run(config, args...)
-			if s != "" {
-				out = append(out, s)
-			}
-			if err != nil {
-				return applyResultMsg{strings.Join(out, "\n"), fmt.Errorf("%s: %w", c.Label(), err)}
+			if m := step(c.Label(), args...); m != nil {
+				return *m
 			}
 		}
-		args := []string{"sync"}
+		syncArgs := []string{"sync"}
 		if force {
-			args = append(args, "--force")
+			syncArgs = append(syncArgs, "--force")
 		}
-		s, err := r.Run(config, args...)
-		if s != "" {
-			out = append(out, s)
+		if len(removes) > 0 && len(others) > 0 {
+			if m := step("sync", syncArgs...); m != nil {
+				return *m
+			}
 		}
-		if err != nil {
-			return applyResultMsg{strings.Join(out, "\n"), fmt.Errorf("sync: %w", err)}
+		for _, c := range removes {
+			if m := step(c.Label(), "endpoint", "remove", c.Name); m != nil {
+				return *m
+			}
 		}
-		s, err = r.Run(config, "doctor")
+		if m := step("sync", syncArgs...); m != nil {
+			return *m
+		}
+		s, err := r.Run(config, "doctor")
 		if s != "" {
 			out = append(out, "Doctor:\n"+s)
 		}
