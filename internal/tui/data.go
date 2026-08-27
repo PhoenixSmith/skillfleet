@@ -99,6 +99,43 @@ func fileFingerprint(path string) string {
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
+func validSkillName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// vacuumCandidates lists real skill directories in an endpoint that `sync`
+// would adopt into the library: plain directories (not symlinks) holding a
+// SKILL.md, with a name Skillfleet can manage and not already declared.
+func vacuumCandidates(path string, declared map[string]bool) []string {
+	es, err := os.ReadDir(expand(path))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range es {
+		name := e.Name()
+		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 || !validSkillName(name) || declared[name] ||
+			strings.Contains(name, ".skillfleet-backup") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(expand(path), name, "SKILL.md")); err != nil {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 func unmanagedCount(path string, skills map[string]Skill) int {
 	es, err := os.ReadDir(expand(path))
 	if err != nil {

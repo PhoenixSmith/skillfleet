@@ -105,7 +105,7 @@ skillfleet skill route-add cleanup --to future-agent
 skillfleet sync
 ```
 
-**Vacuum:** `sync` also adopts skills added to an endpoint by hand. A directory containing `SKILL.md` is copied into `<library>/skills/<name>`, registered for its originating endpoint only, and replaced by a managed symlink. Opt an endpoint out with `--no-vacuum` on `endpoint add`/`ensure` (`ensure` preserves the setting; `--vacuum` re-enables it). Name collisions fail closed; vacuum never commits or pushes the library repo.
+**Vacuum:** `sync` also adopts skills added to an endpoint by hand. A directory containing `SKILL.md` is copied into `<library>/skills/<name>`, registered for its originating endpoint only, and replaced by a managed symlink. Opt an endpoint out with `--no-vacuum` on `endpoint add`/`ensure` (`ensure` preserves the setting; `--vacuum` re-enables it). `plan` and `status` list pending adoptions as `vacuum_candidates`, so nothing is adopted that a dry run didn't predict. A directory whose name is already declared is never adopted — it surfaces as a plan conflict for `sync --force` to back up. Vacuum never commits or pushes the library repo.
 
 ## Third-party Git skills
 

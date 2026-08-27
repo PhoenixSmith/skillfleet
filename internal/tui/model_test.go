@@ -212,3 +212,78 @@ func TestEndpointEditLoadsVacuumSettingAndViewShowsIt(t *testing.T) {
 		t.Fatal("edit form did not load disabled vacuum state")
 	}
 }
+
+func TestSkillsViewScrollsToKeepCursorVisible(t *testing.T) {
+	s := fixture(t)
+	for i := 0; i < 30; i++ {
+		s.Config.Skills["zz-skill-"+string(rune('a'+i%26))+string(rune('a'+i/26))] = Skill{Source: "skills/x"}
+	}
+	m := NewModel(s)
+	m.cursor = m.itemCount() - 1
+	out := m.skillsView(120, 12)
+	last := m.filtered()[m.cursor]
+	if !strings.Contains(out, "› "+last) {
+		t.Fatalf("cursor row not visible:\n%s", out)
+	}
+	if !strings.Contains(out, "↑") {
+		t.Fatalf("missing overflow indicator:\n%s", out)
+	}
+	if got := len(strings.Split(out, "\n")); got > 14 {
+		t.Fatalf("view overflows height: %d lines", got)
+	}
+}
+
+func TestSkillsViewAlignsColumnsUnderEndpointNames(t *testing.T) {
+	m := NewModel(fixture(t))
+	out := strings.Split(m.skillsView(120, 20), "\n")
+	var head, row string
+	for _, l := range out {
+		if strings.Contains(l, "Skill  ") && strings.Contains(l, "hermes") {
+			head = l
+		}
+		if strings.Contains(l, "alpha") {
+			row = l
+		}
+	}
+	if head == "" || row == "" {
+		t.Fatalf("missing header or row:\n%s", strings.Join(out, "\n"))
+	}
+	col := lipgloss.Width(head[:strings.Index(head, "hermes")])
+	marks := lipgloss.Width(row[:strings.IndexAny(row, "☐☑[")])
+	if col != marks {
+		t.Fatalf("checkbox column %d not under endpoint header %d:\nhead: %q\nrow:  %q", marks, col, head, row)
+	}
+}
+
+func TestSkillsViewEmptyStates(t *testing.T) {
+	s := fixture(t)
+	s.Config.Skills = map[string]Skill{}
+	s.Routes = nil
+	m := NewModel(s)
+	if out := m.skillsView(80, 20); !strings.Contains(out, "No skills. Press n to add one.") {
+		t.Fatalf("missing empty state:\n%s", out)
+	}
+	m2 := NewModel(fixture(t))
+	m2.query = "zzz"
+	if out := m2.skillsView(80, 20); !strings.Contains(out, "No skills match") {
+		t.Fatalf("missing no-match state:\n%s", out)
+	}
+}
+
+func TestPlanViewShowsPendingVacuumAdoptions(t *testing.T) {
+	s := fixture(t)
+	ep := s.Config.Endpoints["hermes"]
+	manual := filepath.Join(expand(ep.Path), "manual-skill")
+	os.MkdirAll(manual, 0755)
+	os.WriteFile(filepath.Join(manual, "SKILL.md"), []byte("# m"), 0644)
+	m := NewModel(s)
+	out := m.planView(100)
+	if !strings.Contains(out, "manual-skill ← hermes") || !strings.Contains(out, "sync will adopt") {
+		t.Fatalf("vacuum preview missing:\n%s", out)
+	}
+	off := false
+	s.Config.Endpoints["hermes"] = Endpoint{Path: ep.Path, Vacuum: &off}
+	if out := NewModel(s).planView(100); strings.Contains(out, "manual-skill") {
+		t.Fatalf("vacuum preview shown for opted-out endpoint:\n%s", out)
+	}
+}

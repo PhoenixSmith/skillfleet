@@ -20,6 +20,7 @@ Use Skillfleet whenever an agent needs to inspect, add, update, route, or audit 
 - Skills target endpoint names. Skillfleet creates direct whole-directory symlinks from endpoints into the library.
 - Per-endpoint source overrides support harness-specific skill variants.
 - `sync` vacuums manually added skill directories into `skills/<name>/` by default, registers them only for the originating endpoint, and links them back. Use `endpoint add/ensure ... --no-vacuum` for a local-only endpoint.
+- `plan` and `status` list pending adoptions under `vacuum_candidates` (with a `conflict` flag for already-declared names), so inspect before `sync` to know exactly what it will adopt.
 - The TUI endpoint add/edit form exposes the same default-on vacuum setting as a checkbox; Space toggles it.
 
 ## Agent-safe workflow
@@ -76,7 +77,7 @@ skillfleet skill source <name> --for <endpoint> skills/<name>/<variant>
 6. Finish every mutation with `skillfleet --json doctor`. A nonzero exit means the setup is not clean.
 7. Do not remove an endpoint while skills still target it. Re-route those skills first.
 8. Keep the library git-clean after intentional changes are committed. Skillfleet does not push or publish repositories itself.
-9. Vacuum is default-on but fails closed on name or destination collisions. It changes the local library and config only; inspect and commit those changes separately.
+9. Vacuum is default-on and never adopts a name that is already declared — such directories surface as plan conflicts for `sync --force` to back up. It changes the local library and config only; inspect and commit those changes separately.
 
 ## Machine-readable behavior
 

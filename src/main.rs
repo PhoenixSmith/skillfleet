@@ -16,12 +16,16 @@ use std::{
     about = "Git-backed skill routing for AI agents"
 )]
 struct Cli {
+    /// Config file path (default: skillfleet.toml in the working directory, else ~/.config/skillfleet/skillfleet.toml).
     #[arg(long, global = true, env = "SKILLFLEET_CONFIG")]
     config: Option<PathBuf>,
+    /// Emit exactly one machine-readable JSON document on stdout.
     #[arg(long, global = true)]
     json: bool,
+    /// Run a safe sync after a successful mutation.
     #[arg(long = "sync", global = true)]
     sync_after: bool,
+    /// Sync after a successful mutation, then verify with doctor (implies --sync).
     #[arg(long, global = true)]
     verify: bool,
     #[command(subcommand)]
@@ -30,24 +34,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Create a new config pointing at a canonical skill library directory.
     Init {
+        /// Directory that holds (or will hold) the canonical skill library.
         #[arg(long)]
         library: PathBuf,
     },
+    /// Manage named endpoints: the directories agents read skills from.
     Endpoint {
         #[command(subcommand)]
         command: EndpointCmd,
     },
+    /// Manage skills: sources, routing, and per-endpoint overrides.
     Skill {
         #[command(subcommand)]
         command: SkillCmd,
     },
+    /// Show everything sync would do, without writing anything.
     Plan,
+    /// One-call snapshot: config, endpoints, skills, routes, plan, and health.
     Status,
+    /// Create or repair links; adopts manual skills from vacuum-enabled endpoints.
     Sync {
+        /// Move conflicting real paths to a *.skillfleet-backup* sibling before linking.
         #[arg(long)]
         force: bool,
     },
+    /// Verify every declared route resolves to its exact canonical source.
     Doctor,
     /// Open the interactive Bubble Tea routing inspector.
     Tui,
@@ -59,11 +72,15 @@ enum Cmd {
     },
     /// Print the roff man page to stdout.
     Man,
+    /// Refresh vendored copies of git-sourced skills.
     Update {
+        /// Skill to update (default: every git-sourced skill).
         name: Option<String>,
+        /// Report available updates without changing anything.
         #[arg(long)]
         check: bool,
     },
+    /// Manage the skillfleet installation and its bundled agent skill.
     #[command(name = "self")]
     SelfSkill {
         #[command(subcommand)]
@@ -73,7 +90,9 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum SelfCmd {
+    /// Route the bundled skillfleet skill to the given endpoints, teaching agents to operate skillfleet.
     Install {
+        /// Endpoint names that receive the bundled skill.
         #[arg(long, num_args = 1..)]
         to: Vec<String>,
     },
@@ -93,15 +112,21 @@ enum SelfCmd {
 
 #[derive(Subcommand)]
 enum EndpointCmd {
+    /// Register a new named endpoint at a directory (fails if the name exists).
     Add {
+        /// Endpoint name: letters, digits, '-', '_', '.'.
         name: String,
+        /// Directory the agent reads skills from.
         path: PathBuf,
         /// Do not adopt manually added skills from this endpoint during sync.
         #[arg(long)]
         no_vacuum: bool,
     },
+    /// Idempotently create or update an endpoint; keeps its vacuum setting unless a flag overrides it.
     Ensure {
+        /// Endpoint name: letters, digits, '-', '_', '.'.
         name: String,
+        /// Directory the agent reads skills from.
         path: PathBuf,
         /// Do not adopt manually added skills from this endpoint during sync.
         #[arg(long)]
@@ -110,63 +135,77 @@ enum EndpointCmd {
         #[arg(long, conflicts_with = "no_vacuum")]
         vacuum: bool,
     },
-    Remove {
-        name: String,
-    },
+    /// Remove an endpoint from the config.
+    Remove { name: String },
+    /// List endpoints with their paths.
     List,
-    Show {
-        name: String,
-    },
+    /// Show one endpoint's configuration.
+    Show { name: String },
 }
 
 #[derive(Subcommand)]
 enum SkillCmd {
+    /// Declare a skill from a library path or a git remote (fails if the name exists).
     Add(SkillAdd),
+    /// Idempotently declare or update a skill; safe in reconciliation loops.
     Ensure(SkillAdd),
-    Remove {
-        name: String,
-    },
+    /// Remove a skill declaration from the config.
+    Remove { name: String },
+    /// Alias of route-set: replace the full set of endpoints a skill targets.
     Route {
         name: String,
+        /// Endpoint names; pass none to clear all routes.
         #[arg(long, num_args=0..)]
         to: Vec<String>,
     },
+    /// Replace the full set of endpoints a skill targets.
     RouteSet {
         name: String,
+        /// Endpoint names; pass none to clear all routes.
         #[arg(long, num_args=0..)]
         to: Vec<String>,
     },
+    /// Add endpoints to a skill's targets.
     RouteAdd {
         name: String,
         #[arg(long, num_args=1..)]
         to: Vec<String>,
     },
+    /// Remove endpoints from a skill's targets.
     RouteRemove {
         name: String,
         #[arg(long, num_args=1..)]
         from: Vec<String>,
     },
+    /// Set a per-endpoint source override for a harness-specific skill variant.
     Source {
         name: String,
+        /// Endpoint that gets the override.
         #[arg(long = "for")]
         endpoint: String,
+        /// Source path for that endpoint (library-relative or absolute).
         path: PathBuf,
     },
+    /// List skills and their targets.
     List,
-    Show {
-        name: String,
-    },
+    /// Show one skill's declaration.
+    Show { name: String },
 }
 
 #[derive(Args)]
 struct SkillAdd {
+    /// Skill name: letters, digits, '-', '_', '.'.
     name: String,
+    /// Library-relative (or absolute) path to the skill directory.
     #[arg(long, conflicts_with = "git")]
     source: Option<PathBuf>,
+    /// Git URL to vendor the skill from.
     #[arg(long, conflicts_with = "source")]
     git: Option<String>,
+    /// Directory inside the git repository that holds the skill.
     #[arg(long)]
     subdir: Option<PathBuf>,
+    /// Endpoint names to route the skill to.
     #[arg(long, num_args=0..)]
     to: Vec<String>,
 }
@@ -275,6 +314,12 @@ fn expand(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 fn load(path: &Path) -> Result<Config> {
+    if !path.exists() {
+        bail!(
+            "no config file at {}; run 'skillfleet init --library PATH' to create one",
+            path.display()
+        );
+    }
     let text =
         fs::read_to_string(path).with_context(|| format!("read config {}", path.display()))?;
     let cfg: Config = toml::from_str(&text).context("parse config")?;
@@ -308,7 +353,9 @@ fn normalize_targets(targets: &mut Vec<String>) {
     targets.dedup();
 }
 fn error_code(message: &str) -> &'static str {
-    if message.contains("already exists") {
+    if message.contains("doctor found") {
+        "verification_failed"
+    } else if message.contains("already exists") {
         "already_exists"
     } else if message.contains("not found") {
         "not_found"
@@ -320,8 +367,6 @@ fn error_code(message: &str) -> &'static str {
         "invalid_skill"
     } else if message.contains("config") {
         "config_error"
-    } else if message.contains("doctor found") {
-        "verification_failed"
     } else {
         "operation_failed"
     }
@@ -581,8 +626,20 @@ struct VacuumReport {
     source: PathBuf,
 }
 
-fn vacuum_endpoints(cfg: &mut Config, config_path: &Path) -> Result<Vec<VacuumReport>> {
-    let mut candidates = Vec::new();
+#[derive(Debug, Serialize)]
+struct VacuumCandidate {
+    name: String,
+    endpoint: String,
+    source: PathBuf,
+    conflict: bool,
+}
+
+/// Read-only scan for manual skill directories that `sync` would adopt:
+/// plain directories (never symlinks) holding a SKILL.md, with a manageable
+/// name, inside vacuum-enabled endpoints. `conflict` marks names that are
+/// already declared, which `sync` refuses to adopt.
+fn vacuum_candidates(cfg: &Config) -> Vec<VacuumCandidate> {
+    let mut out = Vec::new();
     for (endpoint_name, endpoint) in &cfg.endpoints {
         if !endpoint.vacuum {
             continue;
@@ -591,28 +648,41 @@ fn vacuum_endpoints(cfg: &mut Config, config_path: &Path) -> Result<Vec<VacuumRe
         let Ok(entries) = fs::read_dir(&root) else {
             continue;
         };
-        for entry in entries {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             let path = entry.path();
             if !file_type.is_dir() || file_type.is_symlink() || !path.join("SKILL.md").is_file() {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
-            if validate_name(&name).is_err() {
+            // Never adopt `sync --force` backups: re-adopting what was just
+            // moved aside would resurrect the conflict as a bogus skill.
+            if validate_name(&name).is_err() || name.contains(".skillfleet-backup") {
                 continue;
             }
-            candidates.push((endpoint_name.clone(), name, path));
+            out.push(VacuumCandidate {
+                conflict: cfg.skills.contains_key(&name),
+                endpoint: endpoint_name.clone(),
+                name,
+                source: path,
+            });
         }
     }
-    candidates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    out.sort_by(|a, b| (&a.endpoint, &a.name).cmp(&(&b.endpoint, &b.name)));
+    out
+}
 
+fn vacuum_endpoints(cfg: &mut Config, config_path: &Path) -> Result<Vec<VacuumReport>> {
     let mut reports = Vec::new();
-    for (endpoint, name, origin) in candidates {
+    for candidate in vacuum_candidates(cfg) {
+        let (endpoint, name, origin) = (candidate.endpoint, candidate.name, candidate.source);
+        // A directory shadowing a declared skill is never adopted; the plan
+        // reports it as a conflict and `sync --force` backs it up before
+        // linking. Bailing here would block conflict resolution entirely.
         if cfg.skills.contains_key(&name) {
-            bail!(
-                "vacuum conflict: endpoint {endpoint} contains real skill {name}, but that name is already declared"
-            );
+            continue;
         }
         let relative = PathBuf::from(format!("skills/{name}"));
         let destination = expand(&cfg.library).join(&relative);
@@ -981,7 +1051,9 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 if cfg.skills.values().any(|s| s.targets.contains(&name)) {
                     bail!("endpoint {name} is still targeted by skills");
                 }
-                cfg.endpoints.remove(&name).context("endpoint not found")?;
+                cfg.endpoints
+                    .remove(&name)
+                    .with_context(|| format!("endpoint not found: {name}"))?;
                 save(&path, &cfg)?;
                 Outcome {
                     command: "endpoint.remove".into(),
@@ -1004,7 +1076,10 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 hint: None,
             },
             EndpointCmd::Show { name } => {
-                let e = cfg.endpoints.get(&name).context("endpoint not found")?;
+                let e = cfg
+                    .endpoints
+                    .get(&name)
+                    .with_context(|| format!("endpoint not found: {name}"))?;
                 Outcome {
                     command: "endpoint.show".into(),
                     data: serde_json::json!({"name":name,"endpoint":e}),
@@ -1018,7 +1093,9 @@ fn execute(cli: Cli) -> Result<Outcome> {
             SkillCmd::Add(a) => upsert_skill(&mut cfg, &path, a, false)?,
             SkillCmd::Ensure(a) => upsert_skill(&mut cfg, &path, a, true)?,
             SkillCmd::Remove { name } => {
-                cfg.skills.remove(&name).context("skill not found")?;
+                cfg.skills
+                    .remove(&name)
+                    .with_context(|| format!("skill not found: {name}"))?;
                 save(&path, &cfg)?;
                 Outcome {
                     command: "skill.remove".into(),
@@ -1032,7 +1109,10 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 ensure_targets(&cfg, &to)?;
                 let mut to = to;
                 normalize_targets(&mut to);
-                let s = cfg.skills.get_mut(&name).context("skill not found")?;
+                let s = cfg
+                    .skills
+                    .get_mut(&name)
+                    .with_context(|| format!("skill not found: {name}"))?;
                 let changed = s.targets != to;
                 s.targets = to;
                 let targets = s.targets.clone();
@@ -1049,7 +1129,10 @@ fn execute(cli: Cli) -> Result<Outcome> {
             }
             SkillCmd::RouteAdd { name, to } => {
                 ensure_targets(&cfg, &to)?;
-                let s = cfg.skills.get_mut(&name).context("skill not found")?;
+                let s = cfg
+                    .skills
+                    .get_mut(&name)
+                    .with_context(|| format!("skill not found: {name}"))?;
                 let old = s.targets.clone();
                 s.targets.extend(to);
                 normalize_targets(&mut s.targets);
@@ -1068,7 +1151,10 @@ fn execute(cli: Cli) -> Result<Outcome> {
             }
             SkillCmd::RouteRemove { name, from } => {
                 ensure_targets(&cfg, &from)?;
-                let s = cfg.skills.get_mut(&name).context("skill not found")?;
+                let s = cfg
+                    .skills
+                    .get_mut(&name)
+                    .with_context(|| format!("skill not found: {name}"))?;
                 let old = s.targets.clone();
                 s.targets.retain(|x| !from.contains(x));
                 normalize_targets(&mut s.targets);
@@ -1095,7 +1181,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 }
                 cfg.skills
                     .get_mut(&name)
-                    .context("skill not found")?
+                    .with_context(|| format!("skill not found: {name}"))?
                     .source_overrides
                     .insert(endpoint.clone(), source);
                 save(&path, &cfg)?;
@@ -1120,7 +1206,10 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 hint: None,
             },
             SkillCmd::Show { name } => {
-                let s = cfg.skills.get(&name).context("skill not found")?;
+                let s = cfg
+                    .skills
+                    .get(&name)
+                    .with_context(|| format!("skill not found: {name}"))?;
                 Outcome {
                     command: "skill.show".into(),
                     data: serde_json::json!({"name":name,"skill":s}),
@@ -1132,22 +1221,43 @@ fn execute(cli: Cli) -> Result<Outcome> {
         },
         Cmd::Plan => {
             let a = plan(&cfg)?;
+            let vacuum = vacuum_candidates(&cfg);
+            let mut data = plan_document(&a);
+            data["vacuum_candidates"] = serde_json::to_value(&vacuum)?;
+            let mut human: Vec<String> = a
+                .iter()
+                .map(|x| {
+                    format!(
+                        "{:<9} {}:{} -> {}",
+                        action_label(x.action),
+                        x.endpoint,
+                        x.skill,
+                        x.destination.display()
+                    )
+                })
+                .collect();
+            for c in &vacuum {
+                human.push(format!(
+                    "{:<9} {}:{} -> {}{}",
+                    "vacuum",
+                    c.endpoint,
+                    c.name,
+                    if c.conflict {
+                        "not adopted"
+                    } else {
+                        "sync will adopt into library"
+                    },
+                    if c.conflict {
+                        " (name already declared; plan reports the conflict)"
+                    } else {
+                        ""
+                    }
+                ));
+            }
             Outcome {
                 command: "plan".into(),
-                data: plan_document(&a),
-                human: a
-                    .iter()
-                    .map(|x| {
-                        format!(
-                            "{:<9} {}:{} -> {}",
-                            action_label(x.action),
-                            x.endpoint,
-                            x.skill,
-                            x.destination.display()
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                data,
+                human: human.join("\n"),
                 mutated: false,
                 hint: None,
             }
@@ -1155,14 +1265,25 @@ fn execute(cli: Cli) -> Result<Outcome> {
         Cmd::Status => {
             let a = plan(&cfg)?;
             let healthy = a.iter().all(|x| x.action == ActionKind::Ok);
+            let vacuum = vacuum_candidates(&cfg);
+            let adoptable = vacuum.iter().filter(|c| !c.conflict).count();
+            let blocked = vacuum.len() - adoptable;
+            let mut pending = String::new();
+            if adoptable > 0 {
+                pending.push_str(&format!(", {adoptable} pending vacuum adoption(s)"));
+            }
+            if blocked > 0 {
+                pending.push_str(&format!(", {blocked} vacuum name conflict(s)"));
+            }
             Outcome {
                 command: "status".into(),
-                data: serde_json::json!({"config":path,"library":expand(&cfg.library),"endpoints":cfg.endpoints,"skills":cfg.skills,"routes":cfg.skills.iter().map(|(n,s)|serde_json::json!({"skill":n,"targets":s.targets})).collect::<Vec<_>>(),"plan":plan_document(&a),"health":{"ok":healthy}}),
+                data: serde_json::json!({"config":path,"library":expand(&cfg.library),"endpoints":cfg.endpoints,"skills":cfg.skills,"routes":cfg.skills.iter().map(|(n,s)|serde_json::json!({"skill":n,"targets":s.targets})).collect::<Vec<_>>(),"plan":plan_document(&a),"vacuum_candidates":vacuum,"health":{"ok":healthy}}),
                 human: format!(
-                    "{} skills, {} endpoints, health: {}",
+                    "{} skills, {} endpoints, health: {}{}",
                     cfg.skills.len(),
                     cfg.endpoints.len(),
-                    if healthy { "ok" } else { "needs-sync" }
+                    if healthy { "ok" } else { "needs-sync" },
+                    pending
                 ),
                 mutated: false,
                 hint: None,
@@ -1184,7 +1305,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
             };
             Outcome {
                 command: "sync".into(),
-                data: plan_document(&a),
+                data: serde_json::json!({"plan": plan_document(&a), "vacuumed": vacuumed}),
                 human,
                 mutated: !vacuumed.is_empty(),
                 hint: None,
@@ -1195,8 +1316,13 @@ fn execute(cli: Cli) -> Result<Outcome> {
             let bad: Vec<_> = a.iter().filter(|x| x.action != ActionKind::Ok).collect();
             if !bad.is_empty() {
                 bail!(
-                    "doctor found {} problems: {}",
+                    "doctor found {} {}: {} (run 'skillfleet --json plan' for structured detail)",
                     bad.len(),
+                    if bad.len() == 1 {
+                        "problem"
+                    } else {
+                        "problems"
+                    },
                     bad.iter()
                         .map(|x| format!("{} {}:{}", action_label(x.action), x.endpoint, x.skill))
                         .collect::<Vec<_>>()
@@ -1238,7 +1364,9 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 reports.push(update_remote(
                     &cfg,
                     &n,
-                    cfg.skills.get(&n).context("skill not found")?,
+                    cfg.skills
+                        .get(&n)
+                        .with_context(|| format!("skill not found: {n}"))?,
                     check,
                 )?);
             }
@@ -2109,9 +2237,140 @@ mod tests {
         };
         save(&config_path, &cfg).unwrap();
 
-        let error = vacuum_endpoints(&mut cfg, &config_path).unwrap_err();
-        assert!(error.to_string().contains("vacuum conflict"));
+        let reports = vacuum_endpoints(&mut cfg, &config_path).unwrap();
+        assert!(reports.is_empty(), "declared name must not be adopted");
         assert!(manual.is_dir());
         assert!(!manual.is_symlink());
+        assert_eq!(cfg.skills.len(), 1, "no new skill registered");
+    }
+
+    #[test]
+    fn vacuum_candidates_flags_conflicts_and_skips_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        for (ep, skill) in [("on", "fresh"), ("on", "collision"), ("off", "hidden")] {
+            let d = temp.path().join(ep).join(skill);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("SKILL.md"), "# x\n").unwrap();
+        }
+        let cfg = Config {
+            schema: 1,
+            library: temp.path().join("library"),
+            endpoints: BTreeMap::from([
+                (
+                    "on".into(),
+                    Endpoint {
+                        path: temp.path().join("on"),
+                        vacuum: true,
+                    },
+                ),
+                (
+                    "off".into(),
+                    Endpoint {
+                        path: temp.path().join("off"),
+                        vacuum: false,
+                    },
+                ),
+            ]),
+            skills: BTreeMap::from([(
+                "collision".into(),
+                Skill {
+                    source: "skills/collision".into(),
+                    source_overrides: BTreeMap::new(),
+                    targets: Vec::new(),
+                    remote: None,
+                },
+            )]),
+        };
+        let found = vacuum_candidates(&cfg);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.iter().any(|c| c.name == "fresh" && !c.conflict));
+        assert!(found.iter().any(|c| c.name == "collision" && c.conflict));
+    }
+
+    #[test]
+    fn vacuum_never_adopts_force_backups() {
+        let temp = tempfile::tempdir().unwrap();
+        let backup = temp.path().join("endpoint/cleanup.skillfleet-backup");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("SKILL.md"), "# old\n").unwrap();
+        let cfg = Config {
+            schema: 1,
+            library: temp.path().join("library"),
+            endpoints: BTreeMap::from([(
+                "agent".into(),
+                Endpoint {
+                    path: temp.path().join("endpoint"),
+                    vacuum: true,
+                },
+            )]),
+            skills: BTreeMap::new(),
+        };
+        assert!(vacuum_candidates(&cfg).is_empty());
+    }
+
+    #[test]
+    fn plan_and_status_report_vacuum_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("skillfleet.toml");
+        let run = |args: &[&str]| {
+            let mut argv = vec!["skillfleet", "--config", config_path.to_str().unwrap()];
+            argv.extend_from_slice(args);
+            execute(Cli::try_parse_from(argv).unwrap()).unwrap()
+        };
+        run(&[
+            "init",
+            "--library",
+            temp.path().join("library").to_str().unwrap(),
+        ]);
+        let endpoint = temp.path().join("endpoint");
+        let manual = endpoint.join("manual-skill");
+        fs::create_dir_all(&manual).unwrap();
+        fs::write(manual.join("SKILL.md"), "# m\n").unwrap();
+        run(&["endpoint", "add", "agent", endpoint.to_str().unwrap()]);
+
+        let plan_out = run(&["plan"]);
+        let names: Vec<_> = plan_out.data["vacuum_candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["manual-skill"]);
+        assert!(plan_out.human.contains("vacuum"));
+
+        let status_out = run(&["status"]);
+        assert_eq!(
+            status_out.data["vacuum_candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(status_out.human.contains("pending vacuum"));
+    }
+
+    #[test]
+    fn error_messages_are_specific() {
+        assert_eq!(
+            error_code("doctor found 1 problem: conflict claude:x"),
+            "verification_failed"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("skillfleet.toml");
+        let run = |args: &[&str]| {
+            let mut argv = vec!["skillfleet", "--config", config_path.to_str().unwrap()];
+            argv.extend_from_slice(args);
+            execute(Cli::try_parse_from(argv).unwrap())
+        };
+        let missing = run(&["status"]).unwrap_err().to_string();
+        assert!(missing.contains("skillfleet init"), "{missing}");
+        run(&[
+            "init",
+            "--library",
+            temp.path().join("library").to_str().unwrap(),
+        ])
+        .unwrap();
+        let not_found = format!("{:#}", run(&["skill", "show", "ghost"]).unwrap_err());
+        assert!(not_found.contains("skill not found: ghost"), "{not_found}");
     }
 }

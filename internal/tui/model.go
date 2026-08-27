@@ -631,6 +631,41 @@ func (m Model) header() string {
 	}
 	return titleStyle.Render("SKILLFLEET") + dirty + "\n" + strings.Join(ts, "   ")
 }
+func padCell(s string, n int) string {
+	if d := n - lipgloss.Width(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return s
+}
+
+// vacuumPreview lists manual skills that the post-apply sync would adopt,
+// as "skill ← endpoint", honoring staged endpoint edits and skill adds.
+func (m Model) vacuumPreview() []string {
+	declared := map[string]bool{}
+	for _, n := range m.snapshot.SkillNames() {
+		declared[n] = true
+	}
+	for _, c := range m.changes {
+		if c.Kind == ChangeSkillAdd {
+			declared[c.Name] = true
+		}
+	}
+	var out []string
+	for _, n := range m.endpointNames() {
+		ep, ok := m.snapshot.Config.Endpoints[n]
+		if x, yes := m.endpointEdits[n]; yes && x != nil {
+			ep, ok = *x, true
+		}
+		if !ok || !vacuumEnabled(ep) {
+			continue
+		}
+		for _, s := range vacuumCandidates(ep.Path, declared) {
+			out = append(out, s+" ← "+n)
+		}
+	}
+	return out
+}
+
 func (m Model) skillsView(w, h int) string {
 	ns := m.filtered()
 	eps := m.endpointNames()
@@ -638,16 +673,36 @@ func (m Model) skillsView(w, h int) string {
 	if m.searching || m.query != "" {
 		lines = append(lines, "/ "+m.query)
 	}
-	head := "Skill"
-	for _, e := range eps {
-		head += "  " + e
-	}
-	lines = append(lines, clamp(head, w))
-	for i, n := range ns {
-		if len(lines) >= h {
-			break
+	nameW := lipgloss.Width("Skill")
+	for _, n := range ns {
+		if x := lipgloss.Width(n); x > nameW {
+			nameW = x
 		}
-		row := n
+	}
+	colW := make([]int, len(eps))
+	head := padCell("Skill", nameW)
+	for j, e := range eps {
+		colW[j] = max(lipgloss.Width(e), 3)
+		head += "  " + padCell(e, colW[j])
+	}
+	lines = append(lines, clamp("  "+head, w))
+	if len(ns) == 0 {
+		if m.query != "" {
+			lines = append(lines, "No skills match “"+m.query+"”.")
+		} else {
+			lines = append(lines, "No skills. Press n to add one.")
+		}
+		return strings.Join(lines, "\n")
+	}
+	avail := max(1, h-len(lines)-2)
+	start := max(0, m.cursor-avail+1)
+	end := min(len(ns), start+avail)
+	if start > 0 {
+		lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+	}
+	for i := start; i < end; i++ {
+		n := ns[i]
+		row := padCell(n, nameW)
 		for j, e := range eps {
 			mark := "☐"
 			if m.targets(n)[e] {
@@ -656,7 +711,7 @@ func (m Model) skillsView(w, h int) string {
 			if i == m.cursor && j == m.endpointCursor {
 				mark = "[" + mark + "]"
 			}
-			row += "  " + mark
+			row += "  " + padCell(mark, colW[j])
 		}
 		if i == m.cursor {
 			row = "› " + row
@@ -664,6 +719,9 @@ func (m Model) skillsView(w, h int) string {
 			row = "  " + row
 		}
 		lines = append(lines, clamp(row, w))
+	}
+	if end < len(ns) {
+		lines = append(lines, mutedStyle.Render(fmt.Sprintf("  ↓ %d more", len(ns)-end)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -707,8 +765,11 @@ func (m Model) planView(w int) string {
 		p = *m.plan
 	}
 	lines := []string{titleStyle.Render("Apply review")}
+	vac := m.vacuumPreview()
 	if len(m.changes) == 0 {
-		return strings.Join(append(lines, "No staged changes."), "\n")
+		lines = append(lines, "No staged changes.")
+		lines = append(lines, vacuumLines(vac, w)...)
+		return strings.Join(lines, "\n")
 	}
 	lines = append(lines, "Creates / changes:")
 	for _, x := range p.Creates {
@@ -730,10 +791,21 @@ func (m Model) planView(w int) string {
 		}
 		lines = append(lines, clamp(fmt.Sprintf("%s%s → %s [%s]", mark, c.Skill, c.Endpoint, r), w))
 	}
+	lines = append(lines, vacuumLines(vac, w)...)
 	if m.plan != nil {
 		lines = append(lines, "", "Enter apply safely · Esc back")
 	}
 	return strings.Join(lines, "\n")
+}
+func vacuumLines(vac []string, w int) []string {
+	if len(vac) == 0 {
+		return nil
+	}
+	lines := []string{fmt.Sprintf("Vacuum — sync will adopt %d manual skill(s) into the library:", len(vac))}
+	for _, v := range vac {
+		lines = append(lines, "  ~ "+clamp(v, w-4))
+	}
+	return lines
 }
 func (m Model) overlay() string {
 	if m.modalTitle != "" {
