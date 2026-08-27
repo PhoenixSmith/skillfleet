@@ -1,0 +1,292 @@
+schema = 1
+library = "/root/agent-skills"
+
+[endpoints.agents]
+path = "~/.agents/skills"
+
+[endpoints.claude]
+path = "~/.claude/skills"
+
+[endpoints.codex]
+path = "~/.codex/skills"
+
+[endpoints.factory]
+path = "~/.factory/skills"
+
+[endpoints.hermes]
+path = "~/.hermes/skills"
+
+[endpoints.omp]
+path = "~/.omp/agent/skills"
+
+[endpoints.openclaw]
+path = "~/.openclaw/skills"
+
+[endpoints.opencode]
+path = "~/.config/opencode/skills"
+
+[endpoints.pi]
+path = "~/.pi/agent/skills"
+
+[skills.avoid-ai-writing]
+source = "skills/avoid-ai-writing"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "openclaw",
+]
+
+[skills.cleanup]
+source = "skills/cleanup"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "openclaw",
+    "omp",
+]
+
+[skills.enki]
+source = "skills/enki"
+targets = [
+    "pi",
+    "claude",
+    "omp",
+]
+
+[skills.grill-me]
+source = "skills/grill-me/pi"
+targets = [
+    "pi",
+    "omp",
+]
+
+[skills.grill-me.source_overrides]
+omp = "skills/grill-me/omp"
+
+[skills.herdr]
+source = "skills/herdr"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "openclaw",
+    "omp",
+]
+
+[skills.herdr-enki-dev]
+source = "skills/herdr-enki-dev"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "openclaw",
+    "omp",
+]
+
+[skills.hermes]
+source = "skills/hermes"
+targets = [
+    "pi",
+    "claude",
+]
+
+[skills.html-report]
+source = "skills/html-report"
+targets = [
+    "pi",
+    "claude",
+]
+
+[skills.hyperframes]
+source = "skills/hyperframes"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-animation]
+source = "skills/hyperframes-animation"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-audio]
+source = "skills/hyperframes-audio"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-cli]
+source = "skills/hyperframes-cli"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-core]
+source = "skills/hyperframes-core"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-creative]
+source = "skills/hyperframes-creative"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-keyframes]
+source = "skills/hyperframes-keyframes"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.hyperframes-registry]
+source = "skills/hyperframes-registry"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.img2threejs]
+source = "skills/img2threejs"
+targets = [
+    "hermes",
+    "codex",
+]
+
+[skills.impeccable]
+source = "skills/impeccable"
+targets = [
+    "hermes",
+    "claude",
+    "agents",
+]
+
+[skills.impeccable.source_overrides]
+agents = "skills/impeccable/agents"
+claude = "skills/impeccable/claude"
+hermes = "skills/impeccable/agents"
+
+[skills.improve-codebase-architecture]
+source = "skills/improve-codebase-architecture/pi"
+targets = [
+    "pi",
+    "omp",
+]
+
+[skills.improve-codebase-architecture.source_overrides]
+omp = "skills/improve-codebase-architecture/omp"
+
+[skills.low-cost-octopus]
+source = "skills/low-cost-octopus"
+targets = ["pi"]
+
+[skills.media-use]
+source = "skills/media-use"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.nuclear-code-loop]
+source = "skills/nuclear-code-loop"
+targets = ["pi"]
+
+[skills.product-launch-video]
+source = "skills/product-launch-video"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "factory",
+]
+
+[skills.skillfleet]
+source = "skills/skillfleet"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "opencode",
+    "openclaw",
+    "omp",
+    "factory",
+]
+
+[skills.thermo-nuclear-code-quality-review]
+source = "skills/thermo-nuclear-code-quality-review"
+targets = [
+    "hermes",
+    "pi",
+    "claude",
+    "codex",
+    "agents",
+    "openclaw",
+    "omp",
+]

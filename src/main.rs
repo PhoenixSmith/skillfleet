@@ -851,7 +851,7 @@ fn upsert_skill(cfg: &mut Config, path: &Path, a: SkillAdd, ensuring: bool) -> R
             if ensuring { "ensured" } else { "added" }
         ),
         mutated: changed,
-            hint: None,
+        hint: None,
     })
 }
 
@@ -885,11 +885,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
         return Ok(Outcome {
             command: "init".into(),
             data: serde_json::to_value(&cfg)?,
-            human: format!(
-                "initialized {} (library {})",
-                init_path.display(),
-                lib_abs
-            ),
+            human: format!("initialized {} (library {})", init_path.display(), lib_abs),
             mutated: false,
             hint: Some(hint),
         });
@@ -939,12 +935,303 @@ fn execute(cli: Cli) -> Result<Outcome> {
                     data: serde_json::json!({"name":name,"endpoint":cfg.endpoints[&name]}),
                     human: format!("added endpoint {name}"),
                     mutated: true,
-                        hint: None,
+                    hint: None,
+                }
+            }
+            EndpointCmd::Ensure {
+                name,
+                path: p,
+                no_vacuum,
+                vacuum,
+            } => {
+                validate_name(&name)?;
+                // Preserve the existing vacuum setting when neither flag is given;
+                // --vacuum re-enables, --no-vacuum disables.
+                let vacuum_value = if no_vacuum {
+                    false
+                } else if vacuum {
+                    true
+                } else {
+                    cfg.endpoints.get(&name).map(|e| e.vacuum).unwrap_or(true)
+                };
+                let old = cfg.endpoints.get(&name);
+                let changed = match old {
+                    Some(e) => e.path != p || e.vacuum != vacuum_value,
+                    None => true,
+                };
+                cfg.endpoints.insert(
+                    name.clone(),
+                    Endpoint {
+                        path: p,
+                        vacuum: vacuum_value,
+                    },
+                );
+                if changed {
+                    save(&path, &cfg)?;
+                }
+                Outcome {
+                    command: "endpoint.ensure".into(),
+                    data: serde_json::json!({"name":name,"changed":changed,"endpoint":cfg.endpoints[&name]}),
+                    human: format!("ensured endpoint {name}"),
+                    mutated: changed,
+                    hint: None,
+                }
+            }
+            EndpointCmd::Remove { name } => {
+                if cfg.skills.values().any(|s| s.targets.contains(&name)) {
+                    bail!("endpoint {name} is still targeted by skills");
+                }
+                cfg.endpoints.remove(&name).context("endpoint not found")?;
+                save(&path, &cfg)?;
+                Outcome {
+                    command: "endpoint.remove".into(),
+                    data: serde_json::json!({"name":name}),
+                    human: format!("removed endpoint {name}"),
+                    mutated: true,
+                    hint: None,
+                }
+            }
+            EndpointCmd::List => Outcome {
+                command: "endpoint.list".into(),
+                data: serde_json::to_value(&cfg.endpoints)?,
+                human: cfg
+                    .endpoints
+                    .iter()
+                    .map(|(n, e)| format!("{n:<16} {}", expand(&e.path).display()))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                mutated: false,
+                hint: None,
+            },
+            EndpointCmd::Show { name } => {
+                let e = cfg.endpoints.get(&name).context("endpoint not found")?;
+                Outcome {
+                    command: "endpoint.show".into(),
+                    data: serde_json::json!({"name":name,"endpoint":e}),
+                    human: expand(&e.path).display().to_string(),
+                    mutated: false,
+                    hint: None,
+                }
+            }
+        },
+        Cmd::Skill { command } => match command {
+            SkillCmd::Add(a) => upsert_skill(&mut cfg, &path, a, false)?,
+            SkillCmd::Ensure(a) => upsert_skill(&mut cfg, &path, a, true)?,
+            SkillCmd::Remove { name } => {
+                cfg.skills.remove(&name).context("skill not found")?;
+                save(&path, &cfg)?;
+                Outcome {
+                    command: "skill.remove".into(),
+                    data: serde_json::json!({"name":name}),
+                    human: format!("removed skill {name}; run skillfleet sync"),
+                    mutated: true,
+                    hint: None,
+                }
+            }
+            SkillCmd::Route { name, to } | SkillCmd::RouteSet { name, to } => {
+                ensure_targets(&cfg, &to)?;
+                let mut to = to;
+                normalize_targets(&mut to);
+                let s = cfg.skills.get_mut(&name).context("skill not found")?;
+                let changed = s.targets != to;
+                s.targets = to;
+                let targets = s.targets.clone();
+                if changed {
+                    save(&path, &cfg)?;
+                }
+                Outcome {
+                    command: "skill.route.set".into(),
+                    data: serde_json::json!({"name":name,"changed":changed,"targets":targets}),
+                    human: format!("set routes for {name}"),
+                    mutated: changed,
+                    hint: None,
+                }
+            }
+            SkillCmd::RouteAdd { name, to } => {
+                ensure_targets(&cfg, &to)?;
+                let s = cfg.skills.get_mut(&name).context("skill not found")?;
+                let old = s.targets.clone();
+                s.targets.extend(to);
+                normalize_targets(&mut s.targets);
+                let changed = old != s.targets;
+                let targets = s.targets.clone();
+                if changed {
+                    save(&path, &cfg)?;
+                }
+                Outcome {
+                    command: "skill.route.add".into(),
+                    data: serde_json::json!({"name":name,"changed":changed,"targets":targets}),
+                    human: format!("added routes for {name}"),
+                    mutated: changed,
+                    hint: None,
+                }
+            }
+            SkillCmd::RouteRemove { name, from } => {
+                ensure_targets(&cfg, &from)?;
+                let s = cfg.skills.get_mut(&name).context("skill not found")?;
+                let old = s.targets.clone();
+                s.targets.retain(|x| !from.contains(x));
+                normalize_targets(&mut s.targets);
+                let changed = old != s.targets;
+                let targets = s.targets.clone();
+                if changed {
+                    save(&path, &cfg)?;
+                }
+                Outcome {
+                    command: "skill.route.remove".into(),
+                    data: serde_json::json!({"name":name,"changed":changed,"targets":targets}),
+                    human: format!("removed routes for {name}"),
+                    mutated: changed,
+                    hint: None,
+                }
+            }
+            SkillCmd::Source {
+                name,
+                endpoint,
+                path: source,
+            } => {
+                if !cfg.endpoints.contains_key(&endpoint) {
+                    bail!("unknown endpoint: {endpoint}");
+                }
+                cfg.skills
+                    .get_mut(&name)
+                    .context("skill not found")?
+                    .source_overrides
+                    .insert(endpoint.clone(), source);
+                save(&path, &cfg)?;
+                Outcome {
+                    command: "skill.source".into(),
+                    data: serde_json::json!({"name":name,"endpoint":endpoint}),
+                    human: format!("set {name} source override for {endpoint}"),
+                    mutated: true,
+                    hint: None,
+                }
+            }
+            SkillCmd::List => Outcome {
+                command: "skill.list".into(),
+                data: serde_json::to_value(&cfg.skills)?,
+                human: cfg
+                    .skills
+                    .iter()
+                    .map(|(n, s)| format!("{n:<24} {}", s.targets.join(",")))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                mutated: false,
+                hint: None,
+            },
+            SkillCmd::Show { name } => {
+                let s = cfg.skills.get(&name).context("skill not found")?;
+                Outcome {
+                    command: "skill.show".into(),
+                    data: serde_json::json!({"name":name,"skill":s}),
+                    human: toml::to_string_pretty(s)?,
+                    mutated: false,
+                    hint: None,
+                }
+            }
+        },
+        Cmd::Plan => {
+            let a = plan(&cfg)?;
+            Outcome {
+                command: "plan".into(),
+                data: plan_document(&a),
+                human: a
+                    .iter()
+                    .map(|x| {
+                        format!(
+                            "{:<9} {}:{} -> {}",
+                            action_label(x.action),
+                            x.endpoint,
+                            x.skill,
+                            x.destination.display()
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n"),
                 mutated: false,
-                    hint: None,
+                hint: None,
+            }
+        }
+        Cmd::Status => {
+            let a = plan(&cfg)?;
+            let healthy = a.iter().all(|x| x.action == ActionKind::Ok);
+            Outcome {
+                command: "status".into(),
+                data: serde_json::json!({"config":path,"library":expand(&cfg.library),"endpoints":cfg.endpoints,"skills":cfg.skills,"routes":cfg.skills.iter().map(|(n,s)|serde_json::json!({"skill":n,"targets":s.targets})).collect::<Vec<_>>(),"plan":plan_document(&a),"health":{"ok":healthy}}),
+                human: format!(
+                    "{} skills, {} endpoints, health: {}",
+                    cfg.skills.len(),
+                    cfg.endpoints.len(),
+                    if healthy { "ok" } else { "needs-sync" }
+                ),
+                mutated: false,
+                hint: None,
+            }
+        }
+        Cmd::Sync { force } => {
+            // Adopt manually added skills from vacuum-enabled endpoints first
+            // (mutates cfg + library), then link declared routes.
+            let vacuumed = vacuum_endpoints(&mut cfg, &path)?;
+            let a = apply(&cfg, force)?;
+            let human = if vacuumed.is_empty() {
+                format!("sync complete: {} planned entries", a.len())
+            } else {
+                format!(
+                    "sync complete: {} planned entries, {} adopted",
+                    a.len(),
+                    vacuumed.len()
+                )
+            };
+            Outcome {
+                command: "sync".into(),
+                data: plan_document(&a),
+                human,
+                mutated: !vacuumed.is_empty(),
+                hint: None,
+            }
+        }
+        Cmd::Doctor => {
+            let a = plan(&cfg)?;
+            let bad: Vec<_> = a.iter().filter(|x| x.action != ActionKind::Ok).collect();
+            if !bad.is_empty() {
+                bail!(
+                    "doctor found {} problems: {}",
+                    bad.len(),
+                    bad.iter()
+                        .map(|x| format!("{} {}:{}", action_label(x.action), x.endpoint, x.skill))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            Outcome {
+                command: "doctor".into(),
+                data: serde_json::json!({"ok":true,"skills":cfg.skills.len(),"endpoints":cfg.endpoints.len()}),
+                human: format!(
+                    "OK: {} skills across {} named endpoints",
+                    cfg.skills.len(),
+                    cfg.endpoints.len()
+                ),
+                mutated: false,
+                hint: None,
+            }
+        }
+        Cmd::Tui => {
+            launch_tui(&path)?;
+            Outcome {
+                command: "tui".into(),
+                data: serde_json::json!({"exited":true}),
+                human: "TUI exited".into(),
+                mutated: false,
+                hint: None,
+            }
+        }
+        Cmd::Update { name, check } => {
+            let names: Vec<String> = name.map(|n| vec![n]).unwrap_or_else(|| {
+                cfg.skills
+                    .iter()
+                    .filter(|(_, s)| s.remote.is_some())
+                    .map(|(n, _)| n.clone())
+                    .collect()
             });
             let mut reports = Vec::new();
             for n in names {
@@ -972,7 +1259,72 @@ fn execute(cli: Cli) -> Result<Outcome> {
                     .join("\n"),
                 data: serde_json::to_value(reports)?,
                 mutated: changed,
-                    hint: None,
+                hint: None,
+            }
+        }
+        Cmd::SelfSkill {
+            command: SelfCmd::Install { to },
+        } => {
+            ensure_targets(&cfg, &to)?;
+            let relative = PathBuf::from("skills/skillfleet");
+            let directory = expand(&cfg.library).join(&relative);
+            fs::create_dir_all(&directory)?;
+            fs::write(directory.join("SKILL.md"), SELF_SKILL)?;
+            let mut targets = to;
+            normalize_targets(&mut targets);
+            cfg.skills.insert(
+                "skillfleet".into(),
+                Skill {
+                    source: relative,
+                    source_overrides: BTreeMap::new(),
+                    targets,
+                    remote: None,
+                },
+            );
+            save(&path, &cfg)?;
+            Outcome {
+                command: "self.install".into(),
+                data: serde_json::json!({"name":"skillfleet"}),
+                human: "installed bundled skillfleet skill; run skillfleet sync".into(),
+                mutated: true,
+                hint: None,
+            }
+        }
+        Cmd::SelfSkill {
+            command: SelfCmd::Update { .. },
+        } => unreachable!("self update is handled before config load"),
+        Cmd::SelfSkill {
+            command: SelfCmd::Uninstall { .. },
+        } => unreachable!("self uninstall is handled before config load"),
+    };
+    let supports_post_apply = matches!(
+        outcome.command.as_str(),
+        "endpoint.add"
+            | "endpoint.ensure"
+            | "endpoint.remove"
+            | "skill.add"
+            | "skill.ensure"
+            | "skill.remove"
+            | "skill.route.set"
+            | "skill.route.add"
+            | "skill.route.remove"
+            | "skill.source"
+            | "update"
+            | "self.install"
+    );
+    if (outcome.mutated || supports_post_apply) && (cli.sync_after || cli.verify) {
+        let actions = apply(&cfg, false)?;
+        if cli.verify {
+            let remaining = plan(&cfg)?;
+            if remaining.iter().any(|a| a.action != ActionKind::Ok) {
+                bail!("doctor found problems after sync");
+            }
+        }
+        outcome.data = serde_json::json!({"mutation":outcome.data,"sync":plan_document(&actions),"verified":cli.verify});
+        outcome.human.push_str(if cli.verify {
+            "; synced and verified"
+        } else {
+            "; synced"
         });
     }
     Ok(outcome)
@@ -1224,7 +1576,7 @@ fn self_update(check: bool) -> Result<Outcome> {
             data,
             human,
             mutated: false,
-                hint: None,
+            hint: None,
         });
     }
     if check {
@@ -1233,7 +1585,7 @@ fn self_update(check: bool) -> Result<Outcome> {
             data,
             human: format!("update available: {current} -> {upstream}"),
             mutated: false,
-                hint: None,
+            hint: None,
         });
     }
     let url = asset_url(&release, upstream, &os, &arch)?;
@@ -1243,7 +1595,7 @@ fn self_update(check: bool) -> Result<Outcome> {
         data: serde_json::json!({ "current": current, "latest": upstream, "updated": true }),
         human: format!("updated skillfleet to {upstream}"),
         mutated: true,
-            hint: None,
+        hint: None,
     })
 }
 
@@ -1258,7 +1610,7 @@ fn completions_command(shell: clap_complete::Shell) -> Result<Outcome> {
         data: serde_json::json!({ "shell": shell.to_string() }),
         human: String::from_utf8(buf).context("generated completion script is not UTF-8")?,
         mutated: false,
-            hint: None,
+        hint: None,
     })
 }
 
@@ -1273,7 +1625,7 @@ fn man_command() -> Result<Outcome> {
         data: serde_json::json!({ "format": "roff" }),
         human: String::from_utf8(buf).context("generated man page is not UTF-8")?,
         mutated: false,
-            hint: None,
+        hint: None,
     })
 }
 
@@ -1328,7 +1680,7 @@ fn uninstall_command(yes: bool) -> Result<Outcome> {
             )
         },
         mutated: !removed.is_empty(),
-            hint: None,
+        hint: None,
     })
 }
 
