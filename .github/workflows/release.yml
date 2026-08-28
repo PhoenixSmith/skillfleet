@@ -69,7 +69,7 @@ jobs:
           tar -C target/release -czf "dist/skillfleet-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" skillfleet skillfleet-tui
           echo "Packaged skillfleet-${VER}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skillfleet-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*.tar.gz
