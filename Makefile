@@ -1,4 +1,4 @@
-VERSION  := 0.3.0
+VERSION  := 0.3.1
 PREFIX  ?= $(HOME)/.local
 BINDIR  ?= $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man/man1
