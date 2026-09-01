@@ -51,6 +51,13 @@ targets = [
     "omp",
 ]
 
+[skills.code-search-refactor]
+source = "skills/code-search-refactor"
+targets = [
+    "hermes",
+    "pi",
+]
+
 [skills.enki]
 source = "skills/enki"
 targets = [
