@@ -240,10 +240,6 @@ targets = [
 [skills.improve-codebase-architecture.source_overrides]
 omp = "skills/improve-codebase-architecture/omp"
 
-[skills.low-cost-octopus]
-source = "skills/low-cost-octopus"
-targets = ["pi"]
-
 [skills.media-use]
 source = "skills/media-use"
 targets = [
