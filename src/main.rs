@@ -565,16 +565,14 @@ fn apply(cfg: &Config, force: bool) -> Result<Vec<Action>> {
     {
         bail!("{}", a.detail.as_deref().unwrap_or("plan error"));
     }
-    if !force {
-        if let Some(a) = actions
-            .iter()
-            .find(|a| matches!(a.action, ActionKind::Conflict))
-        {
-            bail!(
-                "conflict at {}; rerun sync --force to back it up",
-                a.destination.display()
-            );
-        }
+    if let Some(a) = actions
+        .iter()
+        .find(|a| !force && matches!(a.action, ActionKind::Conflict))
+    {
+        bail!(
+            "conflict at {}; rerun sync --force to back it up",
+            a.destination.display()
+        );
     }
 
     for a in &actions {
