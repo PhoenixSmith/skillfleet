@@ -54,6 +54,18 @@ enum Cmd {
     Plan,
     /// One-call snapshot: config, endpoints, skills, routes, plan, and health.
     Status,
+    /// Repair declared links without vacuuming or changing declarations.
+    Repair {
+        /// Limit repair to one skill.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Limit repair to one endpoint.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Show exactly what repair would change without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Create or repair links; adopts manual skills from vacuum-enabled endpoints.
     Sync {
         /// Move conflicting real paths to a *.skillfleet-backup* sibling before linking.
@@ -163,6 +175,9 @@ enum SkillCmd {
         /// Required acknowledgement that canonical source content will be deleted.
         #[arg(long)]
         global: bool,
+        /// Show the exact links and sources that would be deleted without writing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Alias of route-set: replace the full set of endpoints a skill targets.
     Route {
@@ -184,7 +199,8 @@ enum SkillCmd {
         #[arg(long, num_args=1..)]
         to: Vec<String>,
     },
-    /// Remove endpoints from a skill's targets.
+    /// Backwards-compatible alias for unroute.
+    #[command(hide = true)]
     RouteRemove {
         name: String,
         #[arg(long, num_args=1..)]
@@ -273,7 +289,7 @@ enum ActionKind {
     Error,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct Action {
     action: ActionKind,
     destructive: bool,
@@ -479,10 +495,9 @@ fn plan(cfg: &Config) -> Result<Vec<Action>> {
                     endpoint: target.clone(),
                     destination: dst,
                     source: Some(src.clone()),
-                    detail: Some(
-                        "declared route missing; run skillfleet sync to restore it, or skillfleet skill unroute <name> --from <endpoint> --sync to uninstall it from this endpoint"
-                            .into(),
-                    ),
+                    detail: Some(format!(
+                        "declared route {name} -> {target} is missing; restore with 'skillfleet --json repair --skill {name} --endpoint {target}', or uninstall intentionally with 'skillfleet --json --sync --verify skill unroute {name} --from {target}'"
+                    )),
                 }),
                 Ok(meta) if meta.file_type().is_symlink() => {
                     let actual = fs::canonicalize(&dst).ok();
@@ -573,6 +588,7 @@ fn delete_skill(
     config_path: &Path,
     name: &str,
     global: bool,
+    dry_run: bool,
 ) -> Result<serde_json::Value> {
     if !global {
         bail!("global deletion requires --global; use 'skill remove' to preserve source content");
@@ -645,6 +661,17 @@ fn delete_skill(
         }
     }
 
+    if dry_run {
+        return Ok(serde_json::json!({
+            "name": name,
+            "global": true,
+            "dry_run": true,
+            "changed": false,
+            "would_remove_links": links,
+            "would_remove_sources": sources,
+        }));
+    }
+
     // Persist intent before destructive filesystem cleanup. If saving fails,
     // no links or source content have been touched. Any later cleanup failure
     // is recoverable because sync recognizes undeclared managed links.
@@ -674,14 +701,41 @@ fn delete_skill(
     Ok(serde_json::json!({
         "name": name,
         "global": true,
+        "dry_run": false,
+        "changed": true,
         "removed_links": removed_links,
         "removed_sources": removed_sources,
     }))
 }
 
-fn apply(cfg: &Config, force: bool) -> Result<Vec<Action>> {
-    let actions = plan(cfg)?;
+fn scoped_repair_plan(
+    cfg: &Config,
+    skill: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<Vec<Action>> {
+    if let Some(endpoint) = endpoint
+        && !cfg.endpoints.contains_key(endpoint)
+    {
+        bail!("unknown endpoint: {endpoint}");
+    }
+    let all = plan(cfg)?;
+    if let Some(skill) = skill
+        && !cfg.skills.contains_key(skill)
+        && !all.iter().any(|action| action.skill == skill)
+    {
+        bail!("skill not found: {skill}");
+    }
+    Ok(all
+        .into_iter()
+        .filter(|action| {
+            action.action != ActionKind::Ok
+                && skill.is_none_or(|name| action.skill == name)
+                && endpoint.is_none_or(|name| action.endpoint == name)
+        })
+        .collect())
+}
 
+fn apply_actions(actions: Vec<Action>, force: bool) -> Result<Vec<Action>> {
     // Validate the complete deterministic plan before mutating any endpoint.
     // Without this preflight, an earlier Link/Unlink could succeed before a
     // later missing source or conflict made sync return an error, leaving a
@@ -740,6 +794,11 @@ fn apply(cfg: &Config, force: bool) -> Result<Vec<Action>> {
     }
     Ok(actions)
 }
+
+fn apply(cfg: &Config, force: bool) -> Result<Vec<Action>> {
+    apply_actions(plan(cfg)?, force)
+}
+
 #[derive(Debug, Serialize)]
 struct UpdateReport {
     name: String,
@@ -1295,15 +1354,24 @@ fn execute(cli: Cli) -> Result<Outcome> {
                     hint: None,
                 }
             }
-            SkillCmd::Delete { name, global } => {
-                let data = delete_skill(&mut cfg, &path, &name, global)?;
+            SkillCmd::Delete {
+                name,
+                global,
+                dry_run,
+            } => {
+                if dry_run && (cli.sync_after || cli.verify) {
+                    bail!("skill delete --dry-run cannot be combined with --sync or --verify");
+                }
+                let data = delete_skill(&mut cfg, &path, &name, global, dry_run)?;
                 Outcome {
                     command: "skill.delete".into(),
                     data,
-                    human: format!(
-                        "globally deleted skill {name}; links and canonical source removed"
-                    ),
-                    mutated: true,
+                    human: if dry_run {
+                        format!("global delete preview for skill {name}; nothing changed")
+                    } else {
+                        format!("globally deleted skill {name}; links and canonical source removed")
+                    },
+                    mutated: !dry_run,
                     hint: None,
                 }
             }
@@ -1430,11 +1498,15 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 .iter()
                 .map(|x| {
                     format!(
-                        "{:<9} {}:{} -> {}",
+                        "{:<9} {}:{} -> {}{}",
                         action_label(x.action),
                         x.endpoint,
                         x.skill,
-                        x.destination.display()
+                        x.destination.display(),
+                        x.detail
+                            .as_deref()
+                            .map(|detail| format!(" [{detail}]"))
+                            .unwrap_or_default()
                     )
                 })
                 .collect();
@@ -1491,11 +1563,60 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 hint: None,
             }
         }
+        Cmd::Repair {
+            skill,
+            endpoint,
+            dry_run,
+        } => {
+            if dry_run && (cli.sync_after || cli.verify) {
+                bail!("repair --dry-run cannot be combined with --sync or --verify");
+            }
+            let actions = scoped_repair_plan(&cfg, skill.as_deref(), endpoint.as_deref())?;
+            let changed = !actions.is_empty();
+            let applied = if dry_run {
+                actions.clone()
+            } else {
+                apply_actions(actions.clone(), false)?
+            };
+            if cli.verify
+                && !scoped_repair_plan(&cfg, skill.as_deref(), endpoint.as_deref())?.is_empty()
+            {
+                bail!("scoped repair verification found remaining problems");
+            }
+            Outcome {
+                command: "repair".into(),
+                data: serde_json::json!({
+                    "skill": skill,
+                    "endpoint": endpoint,
+                    "dry_run": dry_run,
+                    "changed": !dry_run && changed,
+                    "would_change": changed,
+                    "plan": plan_document(&applied),
+                    "verified": cli.verify,
+                }),
+                human: if dry_run {
+                    format!("repair preview: {} change(s)", actions.len())
+                } else {
+                    format!("repair complete: {} change(s)", actions.len())
+                },
+                mutated: !dry_run && changed,
+                hint: None,
+            }
+        }
         Cmd::Sync { force } => {
             // Adopt manually added skills from vacuum-enabled endpoints first
             // (mutates cfg + library), then link declared routes.
             let vacuumed = vacuum_endpoints(&mut cfg, &path)?;
             let a = apply(&cfg, force)?;
+            if cli.verify {
+                let remaining = plan(&cfg)?;
+                if remaining
+                    .iter()
+                    .any(|action| action.action != ActionKind::Ok)
+                {
+                    bail!("doctor found problems after sync");
+                }
+            }
             let human = if vacuumed.is_empty() {
                 format!("sync complete: {} planned entries", a.len())
             } else {
@@ -1507,7 +1628,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
             };
             Outcome {
                 command: "sync".into(),
-                data: serde_json::json!({"plan": plan_document(&a), "vacuumed": vacuumed}),
+                data: serde_json::json!({"plan": plan_document(&a), "vacuumed": vacuumed, "verified": cli.verify}),
                 human,
                 mutated: !vacuumed.is_empty(),
                 hint: None,
@@ -1643,7 +1764,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
             | "update"
             | "self.install"
     );
-    if (outcome.mutated || supports_post_apply) && (cli.sync_after || cli.verify) {
+    if supports_post_apply && (cli.sync_after || cli.verify) {
         let actions = apply(&cfg, false)?;
         if cli.verify {
             let remaining = plan(&cfg)?;
@@ -2038,7 +2159,7 @@ fn main() {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"schema_version":1,"ok":true,"command":outcome.command,"data":outcome.data})
+                    serde_json::json!({"schema_version":1,"ok":true,"changed":outcome.mutated,"command":outcome.command,"data":outcome.data})
                 );
             } else if !outcome.human.is_empty() {
                 println!("{}", outcome.human);
@@ -2258,6 +2379,75 @@ mod tests {
     }
 
     #[test]
+    fn scoped_repair_only_touches_selected_routes_and_never_vacuums() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let pi = temp.path().join("pi");
+        let hermes = temp.path().join("hermes");
+        for name in ["alpha", "beta"] {
+            let source = library.join("skills").join(name);
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(source.join("SKILL.md"), format!("# {name}")).unwrap();
+        }
+        std::fs::create_dir_all(pi.join("manual")).unwrap();
+        std::fs::write(pi.join("manual/SKILL.md"), "# manual").unwrap();
+        let mut cfg = Config {
+            schema: 1,
+            library: library.clone(),
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        for (name, path) in [("pi", pi.clone()), ("hermes", hermes.clone())] {
+            cfg.endpoints
+                .insert(name.into(), Endpoint { path, vacuum: true });
+        }
+        cfg.skills.insert(
+            "alpha".into(),
+            Skill {
+                source: "skills/alpha".into(),
+                source_overrides: BTreeMap::new(),
+                targets: vec!["pi".into(), "hermes".into()],
+                remote: None,
+            },
+        );
+        cfg.skills.insert(
+            "beta".into(),
+            Skill {
+                source: "skills/beta".into(),
+                source_overrides: BTreeMap::new(),
+                targets: vec!["pi".into()],
+                remote: None,
+            },
+        );
+        apply(&cfg, false).unwrap();
+        std::fs::remove_file(pi.join("alpha")).unwrap();
+        std::fs::remove_file(pi.join("beta")).unwrap();
+
+        let selected = scoped_repair_plan(&cfg, Some("alpha"), Some("pi")).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].action, ActionKind::Link);
+        assert!(
+            selected[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("skillfleet --json --sync --verify skill unroute alpha --from pi")
+        );
+        apply_actions(selected, false).unwrap();
+
+        assert!(pi.join("alpha").is_symlink());
+        assert!(!pi.join("beta").exists());
+        assert!(hermes.join("alpha").is_symlink());
+        assert!(pi.join("manual").is_dir());
+        assert!(!library.join("skills/manual").exists());
+        assert!(
+            scoped_repair_plan(&cfg, Some("alpha"), Some("pi"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn global_delete_removes_links_declaration_and_canonical_source() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("library");
@@ -2293,7 +2483,16 @@ mod tests {
         apply(&cfg, false).unwrap();
         assert!(endpoint.join("doomed").is_symlink());
 
-        let report = delete_skill(&mut cfg, &config_path, "doomed", true).unwrap();
+        let preview = delete_skill(&mut cfg, &config_path, "doomed", true, true).unwrap();
+        assert_eq!(preview["dry_run"], true);
+        assert_eq!(preview["changed"], false);
+        assert_eq!(preview["would_remove_links"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["would_remove_sources"].as_array().unwrap().len(), 1);
+        assert!(source.exists());
+        assert!(endpoint.join("doomed").is_symlink());
+        assert!(load(&config_path).unwrap().skills.contains_key("doomed"));
+
+        let report = delete_skill(&mut cfg, &config_path, "doomed", true, false).unwrap();
         assert_eq!(report["global"], true);
         assert!(!source.exists());
         assert!(!endpoint.join("doomed").is_symlink());
@@ -2327,13 +2526,13 @@ mod tests {
         save(&config_path, &cfg).unwrap();
 
         assert!(
-            delete_skill(&mut cfg, &config_path, "external", false)
+            delete_skill(&mut cfg, &config_path, "external", false, false)
                 .unwrap_err()
                 .to_string()
                 .contains("requires --global")
         );
         assert!(
-            delete_skill(&mut cfg, &config_path, "external", true)
+            delete_skill(&mut cfg, &config_path, "external", true, false)
                 .unwrap_err()
                 .to_string()
                 .contains("outside the canonical library")

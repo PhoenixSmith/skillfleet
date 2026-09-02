@@ -77,12 +77,24 @@ skillfleet --json --sync --verify skill unroute <name> --from <endpoint...>
 # Remove all routes and the declaration; preserve canonical source content.
 skillfleet --json --sync --verify skill remove <name>
 
+# Preview irreversible global deletion without changing anything.
+skillfleet --json skill delete <name> --global --dry-run
+
 # Irreversibly remove routes, declaration, and canonical source.
 skillfleet --json skill delete <name> --global
 skillfleet --json doctor
 ```
 
-A missing declared endpoint link is drift, not deletion intent. `sync` restores it. Global deletion requires the explicit `delete --global` command, refuses external/shared sources and conflicting endpoint paths, and reports removed paths in JSON.
+A missing declared endpoint link is drift, not deletion intent. Repair it without vacuuming or touching unrelated routes:
+
+```bash
+skillfleet --json repair --skill <name> --endpoint <endpoint> --dry-run
+skillfleet --json --verify repair --skill <name> --endpoint <endpoint>
+```
+
+`repair` creates missing links, fixes managed links, and removes stale managed links in the selected scope. It never vacuums directories, changes declarations, or deletes canonical source. Plan diagnostics include copy-pastable commands with the real skill and endpoint values.
+
+`unroute` is the canonical endpoint-removal command; `route-remove` remains a hidden compatibility alias. Global deletion requires explicit `--global`, refuses external/shared sources and conflicting endpoint paths, and reports removed paths in JSON.
 
 ## Safety rules
 

@@ -145,13 +145,13 @@ skillfleet endpoint list | show NAME
 skillfleet skill add NAME [--source PATH | --git URL [--subdir PATH]] [--to ...]
 skillfleet skill ensure NAME [--source PATH | --git URL [--subdir PATH]] [--to ...]
 skillfleet skill remove NAME                              # preserve canonical source
-skillfleet skill delete NAME --global                     # delete links, declaration, and source
-skillfleet skill unroute NAME --from ENDPOINT ...          # remove selected endpoint routes
+skillfleet skill delete NAME --global [--dry-run]         # preview or delete links, declaration, and source
+skillfleet skill unroute NAME --from ENDPOINT ...          # canonical endpoint removal command
 skillfleet skill route-set NAME --to [ENDPOINT ...]     # `skill route` is an alias
 skillfleet skill route-add NAME --to ENDPOINT ...
-skillfleet skill route-remove NAME --from ENDPOINT ...
 skillfleet skill source NAME --for ENDPOINT PATH
 skillfleet skill list | show NAME
+skillfleet repair [--skill NAME] [--endpoint NAME] [--dry-run]
 skillfleet plan | status | sync [--force] | doctor | tui
 skillfleet update [NAME] [--check]
 skillfleet self install --to [ENDPOINT ...]   # route the bundled skillfleet skill

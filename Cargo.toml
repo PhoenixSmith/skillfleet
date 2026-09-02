@@ -1,6 +1,6 @@
 [package]
 name = "skillfleet"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Git-backed skill routing for AI agent runtimes"
 license = "MIT"
