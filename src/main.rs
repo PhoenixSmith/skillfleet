@@ -402,9 +402,27 @@ fn is_managed_link(path: &Path, cfg: &Config) -> bool {
     if !path.is_symlink() {
         return false;
     }
-    fs::canonicalize(path)
+
+    // canonicalize() alone cannot classify a dangling symlink. Managed links
+    // become dangling precisely when a skill source is removed out of order,
+    // and must still be recognized so sync can clean them up.
+    if fs::canonicalize(path)
         .ok()
         .is_some_and(|p| p.starts_with(expand(&cfg.library)))
+    {
+        return true;
+    }
+
+    let Ok(target) = fs::read_link(path) else {
+        return false;
+    };
+    let target = if target.is_absolute() {
+        target
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    let library = expand(&cfg.library);
+    target.starts_with(&library)
 }
 fn plan(cfg: &Config) -> Result<Vec<Action>> {
     let mut out = Vec::new();
@@ -536,6 +554,29 @@ fn backup_path(dst: &Path) -> PathBuf {
 }
 fn apply(cfg: &Config, force: bool) -> Result<Vec<Action>> {
     let actions = plan(cfg)?;
+
+    // Validate the complete deterministic plan before mutating any endpoint.
+    // Without this preflight, an earlier Link/Unlink could succeed before a
+    // later missing source or conflict made sync return an error, leaving a
+    // partially-applied deployment.
+    if let Some(a) = actions
+        .iter()
+        .find(|a| matches!(a.action, ActionKind::Error))
+    {
+        bail!("{}", a.detail.as_deref().unwrap_or("plan error"));
+    }
+    if !force {
+        if let Some(a) = actions
+            .iter()
+            .find(|a| matches!(a.action, ActionKind::Conflict))
+        {
+            bail!(
+                "conflict at {}; rerun sync --force to back it up",
+                a.destination.display()
+            );
+        }
+    }
+
     for a in &actions {
         match a.action {
             ActionKind::Link => {
@@ -1968,6 +2009,90 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].action, ActionKind::Error);
         assert!(!actions[0].destructive);
+    }
+
+    #[test]
+    fn sync_preflights_missing_sources_before_mutating_endpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let endpoint = temp.path().join("endpoint");
+        std::fs::create_dir_all(library.join("skills/a-valid")).unwrap();
+        std::fs::write(library.join("skills/a-valid/SKILL.md"), "# valid").unwrap();
+
+        let mut cfg = Config {
+            schema: 1,
+            library,
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        cfg.endpoints.insert(
+            "agent".into(),
+            Endpoint {
+                path: endpoint.clone(),
+                vacuum: true,
+            },
+        );
+        cfg.skills.insert(
+            "a-valid".into(),
+            Skill {
+                source: "skills/a-valid".into(),
+                source_overrides: BTreeMap::new(),
+                targets: vec!["agent".into()],
+                remote: None,
+            },
+        );
+        // BTreeMap ordering ensures the valid Link action precedes this Error.
+        // Before preflight validation, apply() created the valid link and then
+        // failed, leaving sync partially applied.
+        cfg.skills.insert(
+            "z-missing".into(),
+            Skill {
+                source: "skills/z-missing".into(),
+                source_overrides: BTreeMap::new(),
+                targets: vec!["agent".into()],
+                remote: None,
+            },
+        );
+
+        let error = apply(&cfg, false).unwrap_err().to_string();
+        assert!(error.contains("source missing SKILL.md"));
+        assert!(!endpoint.join("a-valid").exists());
+        assert!(!endpoint.join("a-valid").is_symlink());
+    }
+
+    #[test]
+    fn sync_unlinks_managed_link_after_source_is_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let endpoint = temp.path().join("endpoint");
+        let source = library.join("skills/doomed");
+        let destination = endpoint.join("doomed");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&endpoint).unwrap();
+        std::fs::write(source.join("SKILL.md"), "# doomed").unwrap();
+        symlink(&source, &destination).unwrap();
+        std::fs::remove_dir_all(&source).unwrap();
+
+        let mut cfg = Config {
+            schema: 1,
+            library,
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        cfg.endpoints.insert(
+            "agent".into(),
+            Endpoint {
+                path: endpoint,
+                vacuum: true,
+            },
+        );
+
+        assert!(destination.is_symlink());
+        assert!(is_managed_link(&destination, &cfg));
+        let actions = apply(&cfg, false).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, ActionKind::Unlink);
+        assert!(!destination.is_symlink());
     }
 
     #[test]
