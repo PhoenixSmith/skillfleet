@@ -144,7 +144,9 @@ skillfleet endpoint remove NAME
 skillfleet endpoint list | show NAME
 skillfleet skill add NAME [--source PATH | --git URL [--subdir PATH]] [--to ...]
 skillfleet skill ensure NAME [--source PATH | --git URL [--subdir PATH]] [--to ...]
-skillfleet skill remove NAME
+skillfleet skill remove NAME                              # preserve canonical source
+skillfleet skill delete NAME --global                     # delete links, declaration, and source
+skillfleet skill unroute NAME --from ENDPOINT ...          # remove selected endpoint routes
 skillfleet skill route-set NAME --to [ENDPOINT ...]     # `skill route` is an alias
 skillfleet skill route-add NAME --to ENDPOINT ...
 skillfleet skill route-remove NAME --from ENDPOINT ...

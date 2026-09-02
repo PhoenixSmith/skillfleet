@@ -149,8 +149,21 @@ enum SkillCmd {
     Add(SkillAdd),
     /// Idempotently declare or update a skill; safe in reconciliation loops.
     Ensure(SkillAdd),
-    /// Remove a skill declaration from the config.
+    /// Remove a skill declaration and all managed endpoint links, preserving source content.
     Remove { name: String },
+    /// Remove a skill from selected endpoints while preserving its declaration and source.
+    Unroute {
+        name: String,
+        #[arg(long, num_args=1..)]
+        from: Vec<String>,
+    },
+    /// Delete a skill globally: managed endpoint links, declaration, and canonical source.
+    Delete {
+        name: String,
+        /// Required acknowledgement that canonical source content will be deleted.
+        #[arg(long)]
+        global: bool,
+    },
     /// Alias of route-set: replace the full set of endpoints a skill targets.
     Route {
         name: String,
@@ -466,7 +479,10 @@ fn plan(cfg: &Config) -> Result<Vec<Action>> {
                     endpoint: target.clone(),
                     destination: dst,
                     source: Some(src.clone()),
-                    detail: None,
+                    detail: Some(
+                        "declared route missing; run skillfleet sync to restore it, or skillfleet skill unroute <name> --from <endpoint> --sync to uninstall it from this endpoint"
+                            .into(),
+                    ),
                 }),
                 Ok(meta) if meta.file_type().is_symlink() => {
                     let actual = fs::canonicalize(&dst).ok();
@@ -552,6 +568,117 @@ fn backup_path(dst: &Path) -> PathBuf {
     }
     p
 }
+fn delete_skill(
+    cfg: &mut Config,
+    config_path: &Path,
+    name: &str,
+    global: bool,
+) -> Result<serde_json::Value> {
+    if !global {
+        bail!("global deletion requires --global; use 'skill remove' to preserve source content");
+    }
+    let skill = cfg
+        .skills
+        .get(name)
+        .with_context(|| format!("skill not found: {name}"))?;
+    let library = expand(&cfg.library);
+    let canonical_library = fs::canonicalize(&library).unwrap_or_else(|_| library.clone());
+
+    let mut sources = vec![source_path(cfg, skill, None)];
+    sources.extend(skill.source_overrides.values().map(|source| {
+        if source.is_absolute() {
+            source.clone()
+        } else {
+            library.join(source)
+        }
+    }));
+    sources.sort();
+    sources.dedup();
+    for source in &sources {
+        let comparable = fs::canonicalize(source).unwrap_or_else(|_| source.clone());
+        if comparable == canonical_library || !comparable.starts_with(&canonical_library) {
+            bail!(
+                "refusing to delete source outside the canonical library: {}",
+                source.display()
+            );
+        }
+    }
+    for (other_name, other) in &cfg.skills {
+        if other_name == name {
+            continue;
+        }
+        let mut other_sources = vec![source_path(cfg, other, None)];
+        other_sources.extend(other.source_overrides.values().map(|source| {
+            if source.is_absolute() {
+                source.clone()
+            } else {
+                library.join(source)
+            }
+        }));
+        if let Some(shared) = sources.iter().find(|source| other_sources.contains(source)) {
+            bail!(
+                "refusing to delete source shared with skill {other_name}: {}",
+                shared.display()
+            );
+        }
+    }
+
+    let mut links = Vec::new();
+    for target in &skill.targets {
+        let endpoint = cfg
+            .endpoints
+            .get(target)
+            .with_context(|| format!("unknown endpoint: {target}"))?;
+        let destination = expand(&endpoint.path).join(name);
+        match fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("inspect endpoint link before delete"),
+            Ok(metadata)
+                if metadata.file_type().is_symlink() && is_managed_link(&destination, cfg) =>
+            {
+                links.push(destination)
+            }
+            Ok(_) => bail!(
+                "refusing global delete: unmanaged or conflicting endpoint path exists: {}",
+                destination.display()
+            ),
+        }
+    }
+
+    // Persist intent before destructive filesystem cleanup. If saving fails,
+    // no links or source content have been touched. Any later cleanup failure
+    // is recoverable because sync recognizes undeclared managed links.
+    cfg.skills.remove(name);
+    save(config_path, cfg)?;
+
+    let mut removed_links = Vec::new();
+    for link in links {
+        fs::remove_file(&link)
+            .with_context(|| format!("remove managed endpoint link {}", link.display()))?;
+        removed_links.push(link);
+    }
+    let mut removed_sources = Vec::new();
+    // Delete children before parents when an override lives inside the base source.
+    sources.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for source in sources {
+        if source.is_dir() {
+            fs::remove_dir_all(&source)
+                .with_context(|| format!("delete canonical source {}", source.display()))?;
+            removed_sources.push(source);
+        } else if source.is_file() || source.is_symlink() {
+            fs::remove_file(&source)
+                .with_context(|| format!("delete canonical source {}", source.display()))?;
+            removed_sources.push(source);
+        }
+    }
+    Ok(serde_json::json!({
+        "name": name,
+        "global": true,
+        "removed_links": removed_links,
+        "removed_sources": removed_sources,
+    }))
+}
+
 fn apply(cfg: &Config, force: bool) -> Result<Vec<Action>> {
     let actions = plan(cfg)?;
 
@@ -1138,8 +1265,44 @@ fn execute(cli: Cli) -> Result<Outcome> {
                 save(&path, &cfg)?;
                 Outcome {
                     command: "skill.remove".into(),
-                    data: serde_json::json!({"name":name}),
-                    human: format!("removed skill {name}; run skillfleet sync"),
+                    data: serde_json::json!({"name":name,"source_preserved":true}),
+                    human: format!(
+                        "removed skill {name}; canonical source preserved; run skillfleet sync"
+                    ),
+                    mutated: true,
+                    hint: None,
+                }
+            }
+            SkillCmd::Unroute { name, from } => {
+                ensure_targets(&cfg, &from)?;
+                let s = cfg
+                    .skills
+                    .get_mut(&name)
+                    .with_context(|| format!("skill not found: {name}"))?;
+                let old = s.targets.clone();
+                s.targets.retain(|target| !from.contains(target));
+                normalize_targets(&mut s.targets);
+                let changed = old != s.targets;
+                let targets = s.targets.clone();
+                if changed {
+                    save(&path, &cfg)?;
+                }
+                Outcome {
+                    command: "skill.unroute".into(),
+                    data: serde_json::json!({"name":name,"changed":changed,"targets":targets,"from":from}),
+                    human: format!("unrouted {name}; run skillfleet sync"),
+                    mutated: changed,
+                    hint: None,
+                }
+            }
+            SkillCmd::Delete { name, global } => {
+                let data = delete_skill(&mut cfg, &path, &name, global)?;
+                Outcome {
+                    command: "skill.delete".into(),
+                    data,
+                    human: format!(
+                        "globally deleted skill {name}; links and canonical source removed"
+                    ),
                     mutated: true,
                     hint: None,
                 }
@@ -1472,6 +1635,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
             | "skill.add"
             | "skill.ensure"
             | "skill.remove"
+            | "skill.unroute"
             | "skill.route.set"
             | "skill.route.add"
             | "skill.route.remove"
@@ -2091,6 +2255,188 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].action, ActionKind::Unlink);
         assert!(!destination.is_symlink());
+    }
+
+    #[test]
+    fn global_delete_removes_links_declaration_and_canonical_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let endpoint = temp.path().join("endpoint");
+        let config_path = temp.path().join("skillfleet.toml");
+        let source = library.join("skills/doomed");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("SKILL.md"), "# doomed").unwrap();
+
+        let mut cfg = Config {
+            schema: 1,
+            library,
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        cfg.endpoints.insert(
+            "agent".into(),
+            Endpoint {
+                path: endpoint.clone(),
+                vacuum: false,
+            },
+        );
+        cfg.skills.insert(
+            "doomed".into(),
+            Skill {
+                source: "skills/doomed".into(),
+                source_overrides: BTreeMap::new(),
+                targets: vec!["agent".into()],
+                remote: None,
+            },
+        );
+        save(&config_path, &cfg).unwrap();
+        apply(&cfg, false).unwrap();
+        assert!(endpoint.join("doomed").is_symlink());
+
+        let report = delete_skill(&mut cfg, &config_path, "doomed", true).unwrap();
+        assert_eq!(report["global"], true);
+        assert!(!source.exists());
+        assert!(!endpoint.join("doomed").is_symlink());
+        let persisted = load(&config_path).unwrap();
+        assert!(!persisted.skills.contains_key("doomed"));
+    }
+
+    #[test]
+    fn global_delete_requires_flag_and_refuses_external_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let external = temp.path().join("external");
+        let config_path = temp.path().join("skillfleet.toml");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("SKILL.md"), "# external").unwrap();
+        let mut cfg = Config {
+            schema: 1,
+            library,
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        cfg.skills.insert(
+            "external".into(),
+            Skill {
+                source: external.clone(),
+                source_overrides: BTreeMap::new(),
+                targets: vec![],
+                remote: None,
+            },
+        );
+        save(&config_path, &cfg).unwrap();
+
+        assert!(
+            delete_skill(&mut cfg, &config_path, "external", false)
+                .unwrap_err()
+                .to_string()
+                .contains("requires --global")
+        );
+        assert!(
+            delete_skill(&mut cfg, &config_path, "external", true)
+                .unwrap_err()
+                .to_string()
+                .contains("outside the canonical library")
+        );
+        assert!(external.join("SKILL.md").is_file());
+        assert!(load(&config_path).unwrap().skills.contains_key("external"));
+    }
+
+    #[test]
+    fn missing_declared_route_is_self_healing_and_actionable() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let endpoint = temp.path().join("endpoint");
+        std::fs::create_dir_all(library.join("skills/heal")).unwrap();
+        std::fs::write(library.join("skills/heal/SKILL.md"), "# heal").unwrap();
+        let mut cfg = Config {
+            schema: 1,
+            library,
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        cfg.endpoints.insert(
+            "agent".into(),
+            Endpoint {
+                path: endpoint.clone(),
+                vacuum: false,
+            },
+        );
+        cfg.skills.insert(
+            "heal".into(),
+            Skill {
+                source: "skills/heal".into(),
+                source_overrides: BTreeMap::new(),
+                targets: vec!["agent".into()],
+                remote: None,
+            },
+        );
+
+        let actions = plan(&cfg).unwrap();
+        assert_eq!(actions[0].action, ActionKind::Link);
+        assert!(
+            actions[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("skill unroute")
+        );
+        apply(&cfg, false).unwrap();
+        assert!(endpoint.join("heal").is_symlink());
+        std::fs::remove_file(endpoint.join("heal")).unwrap();
+        apply(&cfg, false).unwrap();
+        assert!(endpoint.join("heal").is_symlink());
+    }
+
+    #[test]
+    fn targeted_mutation_sync_does_not_vacuum_unrelated_endpoint_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let endpoint = temp.path().join("endpoint");
+        let config_path = temp.path().join("skillfleet.toml");
+        std::fs::create_dir_all(library.join("skills/declared")).unwrap();
+        std::fs::write(library.join("skills/declared/SKILL.md"), "# declared").unwrap();
+        std::fs::create_dir_all(endpoint.join("manual")).unwrap();
+        std::fs::write(endpoint.join("manual/SKILL.md"), "# manual").unwrap();
+        let mut cfg = Config {
+            schema: 1,
+            library: library.clone(),
+            endpoints: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        };
+        cfg.endpoints.insert(
+            "agent".into(),
+            Endpoint {
+                path: endpoint.clone(),
+                vacuum: true,
+            },
+        );
+        save(&config_path, &cfg).unwrap();
+
+        execute(
+            Cli::try_parse_from([
+                "skillfleet",
+                "--config",
+                config_path.to_str().unwrap(),
+                "--sync",
+                "skill",
+                "add",
+                "declared",
+                "--source",
+                "skills/declared",
+                "--to",
+                "agent",
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let persisted = load(&config_path).unwrap();
+        assert!(persisted.skills.contains_key("declared"));
+        assert!(!persisted.skills.contains_key("manual"));
+        assert!(endpoint.join("manual").is_dir());
+        assert!(!endpoint.join("manual").is_symlink());
+        assert!(!library.join("skills/manual").exists());
     }
 
     #[test]

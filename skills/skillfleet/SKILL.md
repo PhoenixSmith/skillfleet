@@ -68,6 +68,22 @@ Set a per-endpoint source variant:
 skillfleet skill source <name> --for <endpoint> skills/<name>/<variant>
 ```
 
+Use explicit lifecycle commands. Never delete a managed endpoint link or canonical skill directory with `rm`:
+
+```bash
+# Remove from selected endpoints only; preserve declaration and source.
+skillfleet --json --sync --verify skill unroute <name> --from <endpoint...>
+
+# Remove all routes and the declaration; preserve canonical source content.
+skillfleet --json --sync --verify skill remove <name>
+
+# Irreversibly remove routes, declaration, and canonical source.
+skillfleet --json skill delete <name> --global
+skillfleet --json doctor
+```
+
+A missing declared endpoint link is drift, not deletion intent. `sync` restores it. Global deletion requires the explicit `delete --global` command, refuses external/shared sources and conflicting endpoint paths, and reports removed paths in JSON.
+
 ## Safety rules
 
 1. Use CLI commands, not direct manifest edits, unless repairing a malformed config.
