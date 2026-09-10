@@ -247,6 +247,43 @@ struct Config {
     endpoints: BTreeMap<String, Endpoint>,
     #[serde(default)]
     skills: BTreeMap<String, Skill>,
+    /// Absolute library directory, resolved at load time against the config
+    /// file's own directory. Never serialized: the `library` field keeps the
+    /// portable configured string so one manifest works on every machine.
+    #[serde(skip)]
+    resolved_library: PathBuf,
+}
+
+impl Config {
+    /// Absolute library directory for every filesystem decision.
+    ///
+    /// A repo-local manifest declares `library = "."`. Resolving that against
+    /// the process CWD makes endpoint symlinks depend on where skillfleet was
+    /// invoked from, and makes managed-link detection miss absolute links.
+    /// Falls back to the configured value when the config was not loaded from
+    /// disk (tests constructing `Config` directly).
+    fn library_dir(&self) -> PathBuf {
+        if !self.resolved_library.as_os_str().is_empty() {
+            return self.resolved_library.clone();
+        }
+        expand(&self.library)
+    }
+}
+
+/// Resolve a configured library path to an absolute directory.
+fn resolve_library(configured: &Path, config_path: &Path) -> PathBuf {
+    let expanded = expand(configured);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        let base = config_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join(expanded)
+    };
+    fs::canonicalize(&absolute).unwrap_or(absolute)
 }
 #[derive(Debug, Serialize, Deserialize)]
 struct Endpoint {
@@ -355,6 +392,8 @@ fn load(path: &Path) -> Result<Config> {
     if cfg.schema != 1 {
         bail!("unsupported schema {}, expected 1", cfg.schema);
     }
+    let mut cfg = cfg;
+    cfg.resolved_library = resolve_library(&cfg.library, path);
     Ok(cfg)
 }
 fn save(path: &Path, cfg: &Config) -> Result<()> {
@@ -374,7 +413,7 @@ fn source_path(cfg: &Config, skill: &Skill, endpoint: Option<&str>) -> PathBuf {
     if p.is_absolute() {
         p
     } else {
-        expand(&cfg.library).join(p)
+        cfg.library_dir().join(p)
     }
 }
 fn normalize_targets(targets: &mut Vec<String>) {
@@ -437,7 +476,7 @@ fn is_managed_link(path: &Path, cfg: &Config) -> bool {
     // and must still be recognized so sync can clean them up.
     if fs::canonicalize(path)
         .ok()
-        .is_some_and(|p| p.starts_with(expand(&cfg.library)))
+        .is_some_and(|p| p.starts_with(cfg.library_dir()))
     {
         return true;
     }
@@ -450,7 +489,7 @@ fn is_managed_link(path: &Path, cfg: &Config) -> bool {
     } else {
         path.parent().unwrap_or_else(|| Path::new(".")).join(target)
     };
-    let library = expand(&cfg.library);
+    let library = cfg.library_dir();
     target.starts_with(&library)
 }
 fn plan(cfg: &Config) -> Result<Vec<Action>> {
@@ -597,7 +636,7 @@ fn delete_skill(
         .skills
         .get(name)
         .with_context(|| format!("skill not found: {name}"))?;
-    let library = expand(&cfg.library);
+    let library = cfg.library_dir();
     let canonical_library = fs::canonicalize(&library).unwrap_or_else(|_| library.clone());
 
     let mut sources = vec![source_path(cfg, skill, None)];
@@ -910,7 +949,7 @@ fn vacuum_endpoints(cfg: &mut Config, config_path: &Path) -> Result<Vec<VacuumRe
             continue;
         }
         let relative = PathBuf::from(format!("skills/{name}"));
-        let destination = expand(&cfg.library).join(&relative);
+        let destination = cfg.library_dir().join(&relative);
         if fs::symlink_metadata(&destination).is_ok() {
             bail!(
                 "vacuum conflict: library destination already exists: {}",
@@ -1168,11 +1207,12 @@ fn execute(cli: Cli) -> Result<Outcome> {
         let cfg = Config {
             schema: 1,
             library,
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
         save(&init_path, &cfg)?;
-        let lib_abs = expand(&cfg.library).display().to_string();
+        let lib_abs = cfg.library_dir().display().to_string();
         let hint = format!(
             "Make skillfleet location-independent:\n  echo 'export SKILLFLEET_CONFIG={}' >> ~/.bashrc\n  source ~/.bashrc",
             init_path.display()
@@ -1551,7 +1591,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
             }
             Outcome {
                 command: "status".into(),
-                data: serde_json::json!({"config":path,"library":expand(&cfg.library),"endpoints":cfg.endpoints,"skills":cfg.skills,"routes":cfg.skills.iter().map(|(n,s)|serde_json::json!({"skill":n,"targets":s.targets})).collect::<Vec<_>>(),"plan":plan_document(&a),"vacuum_candidates":vacuum,"health":{"ok":healthy}}),
+                data: serde_json::json!({"config":path,"library":cfg.library_dir(),"endpoints":cfg.endpoints,"skills":cfg.skills,"routes":cfg.skills.iter().map(|(n,s)|serde_json::json!({"skill":n,"targets":s.targets})).collect::<Vec<_>>(),"plan":plan_document(&a),"vacuum_candidates":vacuum,"health":{"ok":healthy}}),
                 human: format!(
                     "{} skills, {} endpoints, health: {}{}",
                     cfg.skills.len(),
@@ -1718,7 +1758,7 @@ fn execute(cli: Cli) -> Result<Outcome> {
         } => {
             ensure_targets(&cfg, &to)?;
             let relative = PathBuf::from("skills/skillfleet");
-            let directory = expand(&cfg.library).join(&relative);
+            let directory = cfg.library_dir().join(&relative);
             fs::create_dir_all(&directory)?;
             fs::write(directory.join("SKILL.md"), SELF_SKILL)?;
             let mut targets = to;
@@ -2269,6 +2309,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: temp.path().join("library"),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2305,6 +2346,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library,
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2344,6 +2386,61 @@ mod tests {
     }
 
     #[test]
+    fn repo_local_manifest_yields_absolute_links_from_any_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("library");
+        let endpoint = temp.path().join("endpoint");
+        std::fs::create_dir_all(library.join("skills/alpha")).unwrap();
+        std::fs::write(library.join("skills/alpha/SKILL.md"), "# alpha").unwrap();
+        std::fs::create_dir_all(&endpoint).unwrap();
+        let config_path = library.join("skillfleet.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "schema = 1\nlibrary = \".\"\n\n[endpoints.agent]\npath = \"{}\"\n\n[skills.alpha]\nsource = \"skills/alpha\"\ntargets = [\"agent\"]\n",
+                endpoint.display()
+            ),
+        )
+        .unwrap();
+
+        let cfg = load(&config_path).unwrap();
+        // `library = "."` must resolve against the manifest directory, not the
+        // process CWD, or links silently point at <endpoint>/skills/<name>.
+        assert_eq!(cfg.library_dir(), std::fs::canonicalize(&library).unwrap());
+        let src = source_path(&cfg, cfg.skills.get("alpha").unwrap(), Some("agent"));
+        assert!(src.is_absolute(), "source must be absolute: {}", src.display());
+
+        apply(&cfg, false).unwrap();
+        let link = endpoint.join("alpha");
+        let target = std::fs::read_link(&link).unwrap();
+        assert!(
+            target.is_absolute(),
+            "link target must be absolute: {}",
+            target.display()
+        );
+        assert!(link.join("SKILL.md").is_file());
+        // Without an absolute library, a correct absolute link is misread as an
+        // unmanaged conflict, so sync can never converge.
+        assert!(is_managed_link(&link, &cfg));
+        assert!(
+            plan(&cfg)
+                .unwrap()
+                .iter()
+                .all(|a| a.action == ActionKind::Ok),
+            "second plan must be a no-op"
+        );
+
+        // The configured string stays portable and is never rewritten to an
+        // absolute path when the manifest is saved back.
+        save(&config_path, &cfg).unwrap();
+        let saved = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            saved.contains("library = \".\""),
+            "manifest lost portability: {saved}"
+        );
+    }
+
+    #[test]
     fn sync_unlinks_managed_link_after_source_is_deleted() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("library");
@@ -2359,6 +2456,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library,
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2394,6 +2492,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: library.clone(),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2460,6 +2559,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library,
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2511,6 +2611,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library,
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2551,6 +2652,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library,
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2600,6 +2702,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: library.clone(),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::new(),
             skills: BTreeMap::new(),
         };
@@ -2753,6 +2856,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: library.clone(),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::from([(
                 "agent".into(),
                 Endpoint {
@@ -2794,6 +2898,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: temp.path().join("library"),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::from([(
                 "agent".into(),
                 Endpoint {
@@ -2860,6 +2965,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: temp.path().join("library"),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::from([(
                 "agent".into(),
                 Endpoint {
@@ -2886,6 +2992,7 @@ mod tests {
         let mut cfg = Config {
             schema: 1,
             library: temp.path().join("library"),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::from([(
                 "agent".into(),
                 Endpoint {
@@ -2923,6 +3030,7 @@ mod tests {
         let cfg = Config {
             schema: 1,
             library: temp.path().join("library"),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::from([
                 (
                     "on".into(),
@@ -2964,6 +3072,7 @@ mod tests {
         let cfg = Config {
             schema: 1,
             library: temp.path().join("library"),
+            resolved_library: PathBuf::new(),
             endpoints: BTreeMap::from([(
                 "agent".into(),
                 Endpoint {
